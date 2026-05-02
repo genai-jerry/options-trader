@@ -78,7 +78,7 @@ the corpus, the queued half is *not* deducted, and R5 confirm is what
 finally moves cash out. Tests assert this consistent model (corpus =
 ₹219,000 pre-confirm, ₹209,500 post-confirm).
 
-## Step 4 — REST endpoints + frontend stores `[ ]`
+## Step 4 — REST endpoints + frontend stores `[x]`
 
 Server endpoints:
 - `GET    /api/account`
@@ -98,6 +98,15 @@ Frontend: react-query hooks per endpoint. Zustand for transient UI only.
 
 **Acceptance.** Curl-able backend; web app shows live data; closing a trade
 in the API updates account state correctly per the rules engine.
+
+**Status.** Done. All endpoints implemented under
+`apps/server/src/routes/{account,trades,withdrawals}.ts` with zod-parsed
+bodies, server-side `evaluateDecision` running C1–C6 (BLOCK responses
+return 409 with the full DecisionRecord), and `applyRulesOnClose` driving
+trade closes inside a single SQLite transaction. Web hooks live in
+`apps/web/src/api/{client.ts,hooks.ts}`; Dashboard renders live account
+tiles. Verified via curl: bootstrap → 2X trigger → SELF_SUSTAINING split
+→ confirmed withdrawal flows match the rules-engine tests numerically.
 
 ## Step 5 — Settings page `[ ]`
 

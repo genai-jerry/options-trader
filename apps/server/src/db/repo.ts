@@ -161,11 +161,58 @@ function rowToAdvisorMessage(row: AdvisorMessageRow): AdvisorMessage {
 
 export function createRepo(db: Database) {
   return {
+    // ── transactions ───────────────────────────────────────────────────
+    /** Wrap multi-step writes in a transaction. */
+    tx<T>(fn: () => T): T {
+      return db.transaction(fn)();
+    },
+
     // ── account ────────────────────────────────────────────────────────
     getAccount(): Account {
       const row = db.prepare('SELECT * FROM account WHERE id = 1').get() as AccountRow | undefined;
       if (!row) throw new Error('Account row missing — migration seed did not run.');
       return rowToAccount(row);
+    },
+
+    /** Replace the entire account row (used after rule-engine state transitions). */
+    putAccount(account: Account): void {
+      db.prepare(
+        `UPDATE account SET
+          principal_x = ?, fee_percent = ?, position_size_cap = ?, phase = ?,
+          investable_corpus = ?, set_aside = ?, cash_withdrawn = ?,
+          realized_pnl = ?, fees_paid = ?, ai_enabled = ?, lock_override_at = ?
+         WHERE id = 1`,
+      ).run(
+        account.principalX,
+        account.feePercent,
+        account.positionSizeCap,
+        account.phase,
+        account.investableCorpus,
+        account.setAside,
+        account.cashWithdrawn,
+        account.realizedPnL,
+        account.feesPaid,
+        account.aiEnabled ? 1 : 0,
+        account.lockOverrideAt ?? null,
+      );
+    },
+
+    /**
+     * Wipe every domain table and re-seed an empty account row. Schema
+     * version is preserved so migrations don't re-run unnecessarily.
+     */
+    resetAll(): void {
+      db.transaction(() => {
+        db.exec(`
+          DELETE FROM advisor_messages;
+          DELETE FROM decisions;
+          DELETE FROM pending_withdrawals;
+          DELETE FROM trades;
+          DELETE FROM zerodha_sessions;
+          DELETE FROM account;
+          INSERT INTO account (id) VALUES (1);
+        `);
+      })();
     },
 
     // ── trades ─────────────────────────────────────────────────────────
@@ -196,6 +243,65 @@ export function createRepo(db: Database) {
       return rows.map(rowToTrade);
     },
 
+    insertTrade(trade: Trade): void {
+      db.prepare(
+        `INSERT INTO trades (
+           id, symbol, instrument, strike, expiry, lot_size, qty,
+           entry_price, entry_at, exit_price, exit_at, status,
+           fees, gross_pnl, net_pnl, notes, agent_source
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        trade.id,
+        trade.symbol,
+        trade.instrument,
+        trade.strike ?? null,
+        trade.expiry,
+        trade.lotSize,
+        trade.qty,
+        trade.entryPrice,
+        trade.entryAt,
+        trade.exitPrice ?? null,
+        trade.exitAt ?? null,
+        trade.status,
+        trade.fees ?? null,
+        trade.grossPnL ?? null,
+        trade.netPnL ?? null,
+        trade.notes ?? null,
+        trade.agentSource ?? null,
+      );
+    },
+
+    /** Replace an existing trade row (used to record a close). */
+    putTrade(trade: Trade): void {
+      const result = db.prepare(
+        `UPDATE trades SET
+           symbol = ?, instrument = ?, strike = ?, expiry = ?, lot_size = ?,
+           qty = ?, entry_price = ?, entry_at = ?, exit_price = ?, exit_at = ?,
+           status = ?, fees = ?, gross_pnl = ?, net_pnl = ?, notes = ?,
+           agent_source = ?
+         WHERE id = ?`,
+      ).run(
+        trade.symbol,
+        trade.instrument,
+        trade.strike ?? null,
+        trade.expiry,
+        trade.lotSize,
+        trade.qty,
+        trade.entryPrice,
+        trade.entryAt,
+        trade.exitPrice ?? null,
+        trade.exitAt ?? null,
+        trade.status,
+        trade.fees ?? null,
+        trade.grossPnL ?? null,
+        trade.netPnL ?? null,
+        trade.notes ?? null,
+        trade.agentSource ?? null,
+        trade.id,
+      );
+      if (result.changes === 0) throw new Error(`putTrade: trade ${trade.id} not found`);
+    },
+
     // ── withdrawals ────────────────────────────────────────────────────
     listWithdrawals(filter: { status?: WithdrawalStatus } = {}): PendingWithdrawal[] {
       const where = filter.status ? 'WHERE status = ?' : '';
@@ -206,12 +312,50 @@ export function createRepo(db: Database) {
       return rows.map(rowToWithdrawal);
     },
 
+    getWithdrawalById(id: string): PendingWithdrawal | null {
+      const row = db
+        .prepare('SELECT * FROM pending_withdrawals WHERE id = ?')
+        .get(id) as WithdrawalRow | undefined;
+      return row ? rowToWithdrawal(row) : null;
+    },
+
+    insertWithdrawal(w: PendingWithdrawal): void {
+      db.prepare(
+        `INSERT INTO pending_withdrawals (id, amount, from_trade_id, status, created_at, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(w.id, w.amount, w.fromTradeId, w.status, w.createdAt, w.decidedAt ?? null);
+    },
+
+    putWithdrawal(w: PendingWithdrawal): void {
+      const result = db.prepare(
+        `UPDATE pending_withdrawals
+            SET amount = ?, from_trade_id = ?, status = ?, decided_at = ?
+          WHERE id = ?`,
+      ).run(w.amount, w.fromTradeId, w.status, w.decidedAt ?? null, w.id);
+      if (result.changes === 0) throw new Error(`putWithdrawal: ${w.id} not found`);
+    },
+
     // ── decisions ──────────────────────────────────────────────────────
     listDecisions(limit = 50): DecisionRecord[] {
       const rows = db
         .prepare('SELECT * FROM decisions ORDER BY decided_at DESC LIMIT ?')
         .all(limit) as DecisionRow[];
       return rows.map(rowToDecision);
+    },
+
+    insertDecision(d: DecisionRecord): void {
+      db.prepare(
+        `INSERT INTO decisions (id, trade_id, input_json, checks_json, verdict, decided_at, accepted_by_user)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        d.id,
+        d.tradeId ?? null,
+        JSON.stringify(d.input),
+        JSON.stringify(d.checks),
+        d.verdict,
+        d.decidedAt,
+        d.acceptedByUser ? 1 : 0,
+      );
     },
 
     // ── advisor messages ───────────────────────────────────────────────
