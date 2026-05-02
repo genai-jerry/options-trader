@@ -40,38 +40,15 @@ Default branch: `main`.
 
 - **Spec is locked.** All design decisions are recorded in DECISIONS.md.
   Don't relitigate them without checking with the user.
-- **Step 1 (monorepo scaffold) is done locally.** During the planning
-  session a 32-file scaffold was committed as `ef0fe88` on `main` in the
-  user's `~/options-trader` directory.
-- **GitHub state may be inconsistent.** A previous mishap force-pushed
-  `lighthouse-ui`'s history into the `options-trader` GitHub repo. The user
-  was given recovery steps (force-push the local scaffold to overwrite). At
-  the start of a new session, **verify** `github.com/genai-jerry/options-trader`
-  shows commit `ef0fe88` with 32 files including `apps/`, `packages/`,
-  `docs/SPEC.md`. If not, see "Recovery" below.
-- **Steps 2–12 are pending.** Start at Step 2 (Persistence) per the build
-  plan.
-
-## Recovery (if GitHub is still wrong)
-
-The local scaffold lives at `~/options-trader` on the user's Mac.
-
-```bash
-cd ~/options-trader
-git log --oneline   # confirm ef0fe88 is HEAD
-git remote -v       # should be https://github.com/genai-jerry/options-trader.git
-git push --force -u origin main
-```
-
-If the local copy doesn't exist either, regenerate Step 1 from the build plan
-and the spec — it's straightforward, and the scaffold structure is fully
-described there.
-
-While you're at it, ensure `~/lighthouse-ui` has the right remote:
-```bash
-cd ~/lighthouse-ui
-git remote set-url origin https://github.com/genai-jerry/lighthouse-ui.git
-```
+- **Repo was deleted and re-created.** The earlier `ef0fe88` scaffold no
+  longer exists. The current branch `claude/review-docs-build-plan-4mHxf`
+  rebuilds Steps 1 and 2 together in one branch (per user request) and is
+  the working branch for the rest of v1.
+- **Steps 1 and 2 are being rebuilt in this branch.** Step 1 (monorepo
+  scaffold) and Step 2 (persistence) land together; subsequent steps follow
+  the build plan in order.
+- **Steps 3–12 are pending.** After Step 2 lands, start at Step 3 (Domain
+  rules engine).
 
 ## Hard constraints to keep in mind
 
@@ -100,25 +77,16 @@ git remote set-url origin https://github.com/genai-jerry/lighthouse-ui.git
 ## Branch and commit conventions
 
 - Default branch: `main` on `genai-jerry/options-trader`.
-- One feature branch per build-plan step:
-  `step-2-persistence`, `step-3-rules-engine`, `step-4-rest-api`, etc.
-- Commit messages reference the step (e.g. `Step 3: rules engine R1–R3`).
-- Don't push directly to `main` once Step 1 is on GitHub — open a PR per
-  step so the user can review.
-
-## Harness allowlist note
-
-Earlier sessions had `genai-jerry/options-trader` blocked in this Claude
-environment (the local git proxy and signing server were scoped only to
-`lighthouse-ui`). Verify at the start of a new session that the new repo is
-allowlisted; if not, ask the user to update the harness or to grant explicit
-permission for `--no-gpg-sign` commits.
+- Working branch in this Claude session: `claude/review-docs-build-plan-4mHxf`.
+  Per user direction, Steps 1 and 2 land together on this branch instead of
+  the per-step branches the build plan describes.
+- Commit messages reference the step (e.g. `Step 1+2: scaffold + persistence`).
 
 ## Where to start in a fresh session
 
 1. Confirm the four `OPTIONS_TRADING_TRACKER_*.md` docs are in your context.
 2. Read SPEC, then DECISIONS, then BUILD_PLAN, then this file again.
-3. Verify GitHub state per "Current state" above. Do recovery if needed.
-4. Pull `~/options-trader` to confirm the local scaffold is intact.
-5. Start Step 2 (Persistence: SQLite schema + migrations) on a feature
-   branch.
+3. `git log --oneline` and check the HEAD on
+   `claude/review-docs-build-plan-4mHxf` to see how far Steps 1+2 have
+   progressed.
+4. Resume from the next pending step in BUILD_PLAN.md.

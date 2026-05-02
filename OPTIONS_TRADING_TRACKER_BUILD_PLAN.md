@@ -11,7 +11,7 @@ Read alongside `OPTIONS_TRADING_TRACKER_SPEC.md` (design) and
 
 ---
 
-## Step 1 — Monorepo scaffold `[x]`
+## Step 1 — Monorepo scaffold `[x]` *(rebuilt)*
 
 - npm workspaces: `apps/web`, `apps/server`, `packages/shared`.
 - Root: shared `tsconfig.base.json`, `.prettierrc.json`, `.editorconfig`,
@@ -26,12 +26,11 @@ Read alongside `OPTIONS_TRADING_TRACKER_SPEC.md` (design) and
   PendingWithdrawal, NewTradeInput, DecisionRecord, AccountSnapshot, etc.).
 - `docs/SPEC.md` — canonical design doc copied into the repo.
 
-**Status.** Built locally during the planning session as commit `ef0fe88` on
-branch `main` in `~/options-trader`. May or may not yet be on
-`github.com/genai-jerry/options-trader` depending on whether the force-push
-recovery has been completed (see CONTEXT.md).
+**Status.** Repo was deleted and re-created. Step 1 has been rebuilt on
+`claude/review-docs-build-plan-4mHxf` together with Step 2 (per user
+direction to land both in one branch).
 
-## Step 2 — Persistence: SQLite schema + migrations `[ ]`
+## Step 2 — Persistence: SQLite schema + migrations `[x]`
 
 - `apps/server/src/db/schema.sql` — tables: `account`, `trades`,
   `pending_withdrawals`, `decisions`, `advisor_messages`,
@@ -43,6 +42,10 @@ recovery has been completed (see CONTEXT.md).
 
 **Acceptance.** Backend boots, applies migrations, exposes
 `/api/health/db` showing schema version and table list.
+
+**Status.** Done. `apps/server/src/db/schema.sql`, the migration runner,
+`repo.ts`, and `/api/health/db` ship in this branch. Verified locally:
+`schemaVersion: 1` and all six tables present.
 
 ## Step 3 — Domain rules engine `[ ]` *(foundation; do this carefully)*
 

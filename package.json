@@ -1,0 +1,35 @@
+{
+  "name": "options-trader",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Personal options-trading capital tracker with phase-based investment philosophy, AI advisor, and live Zerodha Kite integration.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm-run-all --parallel dev:server dev:web",
+    "dev:server": "npm --workspace apps/server run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "build": "npm-run-all --serial build:shared build:server build:web",
+    "build:shared": "npm --workspace packages/shared run build",
+    "build:server": "npm --workspace apps/server run build",
+    "build:web": "npm --workspace apps/web run build",
+    "typecheck": "npm-run-all --parallel typecheck:*",
+    "typecheck:shared": "npm --workspace packages/shared run typecheck",
+    "typecheck:server": "npm --workspace apps/server run typecheck",
+    "typecheck:web": "npm --workspace apps/web run typecheck",
+    "test": "npm-run-all --serial test:shared test:server",
+    "test:shared": "npm --workspace packages/shared run test",
+    "test:server": "npm --workspace apps/server run test",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
