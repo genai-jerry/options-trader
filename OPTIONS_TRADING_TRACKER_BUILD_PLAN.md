@@ -108,7 +108,7 @@ trade closes inside a single SQLite transaction. Web hooks live in
 tiles. Verified via curl: bootstrap → 2X trigger → SELF_SUSTAINING split
 → confirmed withdrawal flows match the rules-engine tests numerically.
 
-## Step 5 — Settings page `[ ]`
+## Step 5 — Settings page `[x]`
 
 - Set `principalX` (one-time gate; if any trade exists, hide and show
   "Reset everything" instead).
@@ -118,6 +118,16 @@ tiles. Verified via curl: bootstrap → 2X trigger → SELF_SUSTAINING split
 
 **Acceptance.** A user can complete first-time setup end-to-end starting
 from an empty database.
+
+**Status.** Done. `apps/web/src/pages/Settings.tsx` has four sections:
+Principal X (rupee input → paise on submit; disables once any trade
+exists, with a contextual message), Preferences (fee% / position-size
+cap as percentages, AI advisor toggle), and Reset Everything (typed
+"RESET" confirmation dialog). Two outlined cards stub out AI provider /
+Zerodha credentials with notes pointing to Steps 10 and 11 — those
+sections are owned by those steps. Verified the first-time setup loop
+end-to-end: empty DB → set X → save prefs → open trade → principal
+locks (409) → reset wipes everything.
 
 ## Step 6 — New Trade / Decision Helper `[ ]`
 
