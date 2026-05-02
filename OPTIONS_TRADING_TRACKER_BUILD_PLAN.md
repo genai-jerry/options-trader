@@ -47,7 +47,7 @@ direction to land both in one branch).
 `repo.ts`, and `/api/health/db` ship in this branch. Verified locally:
 `schemaVersion: 1` and all six tables present.
 
-## Step 3 — Domain rules engine `[ ]` *(foundation; do this carefully)*
+## Step 3 — Domain rules engine `[x]`
 
 - `packages/shared/src/domain/money.ts` — paise helpers, `formatINR`.
 - `packages/shared/src/domain/rules.ts`:
@@ -63,6 +63,20 @@ direction to land both in one branch).
   self-sustaining split, lock trigger, withdrawal confirm/cancel).
 
 **Acceptance.** Test suite passes with full branch coverage on `rules.ts`.
+
+**Status.** Done. `packages/shared/src/domain/{money,rules}.ts` and
+`packages/shared/test/rules.spec.ts` ship in this branch. 29 tests pass,
+covering R1–R5, C1–C6, and the worked sequences in spec §3.
+
+**Implementation note (spec inconsistency).** The spec's worked example
+for R2 says `corpus = 200,000 - 80,000 + 100,000 - 9,500 = 210,500`,
+which double-counts the queued half against R5 ("investableCorpus -=
+amount" on confirm). The rule text is unambiguous — "the withdrawn half
+stays in the corpus until the user confirms it (R5)" — so the engine
+implements: on a SELF_SUSTAINING profitable close, fees are debited from
+the corpus, the queued half is *not* deducted, and R5 confirm is what
+finally moves cash out. Tests assert this consistent model (corpus =
+₹219,000 pre-confirm, ₹209,500 post-confirm).
 
 ## Step 4 — REST endpoints + frontend stores `[ ]`
 
