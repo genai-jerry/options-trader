@@ -35,7 +35,11 @@ import { useAccount, useCreateTrade, useTrades } from '../api/hooks';
 import { AdvisorPanel } from '../components/AdvisorPanel';
 
 type Mode = 'detailed' | 'quick';
-const MODE_STORAGE_KEY = 'options-trader.newTrade.mode';
+// Bumped from `options-trader.newTrade.mode` when Quick became the default.
+// The key change resets the per-browser preference; the old key is removed
+// once on mount to avoid cruft.
+const MODE_STORAGE_KEY = 'options-trader.newTrade.mode.v2';
+const LEGACY_MODE_KEYS = ['options-trader.newTrade.mode'];
 
 const VERDICT_COLOR: Record<Verdict, 'success' | 'warning' | 'error'> = {
   GO: 'success',
@@ -61,6 +65,7 @@ export function NewTrade() {
   });
   useEffect(() => {
     window.localStorage.setItem(MODE_STORAGE_KEY, mode);
+    for (const k of LEGACY_MODE_KEYS) window.localStorage.removeItem(k);
   }, [mode]);
 
   // The currently-being-edited input drives the verdict + computed + advisor
