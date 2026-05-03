@@ -26,6 +26,9 @@ apps/server/data/
 *.log
 npm-debug.log*
 
+# Local runtime (pid files + dev logs from scripts/start.sh)
+.run/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

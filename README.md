@@ -198,6 +198,32 @@ npm run dev:server      # backend only
 npm run dev:web         # frontend only (calls /api → proxied to 4000)
 ```
 
+### Background start / stop scripts
+
+For longer-running sessions where you don't want a terminal window open
+holding the foreground process, the repo ships start/stop scripts. They
+spawn each side under `setsid` so the entire process tree (npm → tsx →
+node, etc.) is killed cleanly on stop. PIDs and logs land in `.run/`
+(gitignored).
+
+```bash
+npm run start            # both apps in the background; tails:
+                         #   .run/server.log + .run/web.log
+npm run stop             # SIGTERMs the whole tree, falls back to SIGKILL
+                         # after 5s if anything's still alive
+
+# Single-process prod-style run: builds the SPA and serves it from Express.
+npm run start:prod
+npm run stop:prod
+
+# Docker compose (uses docker-compose.yml).
+npm run start:docker     # docker compose up -d --build
+npm run stop:docker      # docker compose down
+```
+
+Equivalent direct invocations: `scripts/start.sh [--dev|--prod|--docker]`
+and `scripts/stop.sh [--dev|--prod|--docker]`. Defaults to `--dev`.
+
 ### Production-style build (no deploy yet)
 
 ```bash
