@@ -8,11 +8,13 @@ engine — not the user — decide whether a trade is allowed, how profits are
 split, and when the account locks. Every amount is stored as **integer paise**
 to avoid float drift; only the view layer formats to `₹`.
 
-> Status: actively under construction. Steps 1–5 are shipped (scaffold,
-> SQLite persistence, domain rules engine, REST + react-query hooks, Settings
-> page). Steps 6–12 (full New Trade form, Trades list, Withdrawals view,
-> Dashboard polish, AI Advisor, Zerodha integration) are stubbed pages today
-> — see `OPTIONS_TRADING_TRACKER_BUILD_PLAN.md` for the full roadmap.
+> Status: feature-complete for v1. All twelve build-plan steps are
+> implemented — Decision Helper, Trades list with close action, Withdrawals
+> tabs, Dashboard with lock-floor gauge / equity curve / recent decisions,
+> AI Advisor (decide + streaming chat + portfolio review), Zerodha read-only
+> integration, JSON backup/restore, error boundary, and keyboard shortcuts.
+> The app is dockerised and ships with a GitHub Actions workflow that
+> builds, pushes to GHCR, and deploys to an Amazon Lightsail VM.
 
 ---
 
@@ -32,7 +34,10 @@ to avoid float drift; only the view layer formats to `₹`.
 12. [Database & migrations](#database--migrations)
 13. [Testing, type-checking, formatting](#testing-type-checking-formatting)
 14. [Resetting / backups](#resetting--backups)
-15. [Troubleshooting](#troubleshooting)
+15. [Docker](#docker)
+16. [Deploying to Amazon Lightsail](#deploying-to-amazon-lightsail)
+17. [Keyboard shortcuts](#keyboard-shortcuts)
+18. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -284,10 +289,12 @@ and error when it crosses the floor.
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Trades (Step 7 — currently a stub)
+### 2. Trades
 
-Planned: MUI X DataGrid with status / instrument / symbol filters and an
-inline **Close** action.
+MUI X DataGrid with status / instrument / symbol filters and an inline
+**Close** action. The close dialog runs the rules engine on the server
+side; the resulting `firedRules` (R1/R2/R3) and queued withdrawal show in
+a toast.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -307,10 +314,12 @@ inline **Close** action.
   └─────────────────────────┘
 ```
 
-### 3. New Trade — Decision Helper (Step 6 — currently a stub)
+### 3. New Trade — Decision Helper
 
 Form on the left, deterministic verdict in the middle, AI advisor on the
-right (Step 10).
+right. The verdict updates live as you type; **Accept** posts the trade.
+The server re-runs the rules engine and rejects BLOCK with HTTP 409 even
+if the UI's local check passed.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -337,7 +346,7 @@ Verdict states:
 - **BLOCK** (red) — at least one hard fail (C1/C2/C3). Accept disabled; the
   server also returns 409 if you try.
 
-### 4. Withdrawals (Step 8 — currently a stub)
+### 4. Withdrawals
 
 Three tabs: **Pending** / **Confirmed** / **Cancelled**.
 
@@ -354,10 +363,13 @@ Three tabs: **Pending** / **Confirmed** / **Cancelled**.
 `Confirm` debits the corpus and increments `cashWithdrawn`. `Cancel` keeps
 the cash in the corpus and just marks the row CANCELLED.
 
-### 5. AI Advisor (Step 10 — currently a stub)
+### 5. AI Advisor
 
-Standalone chat. The Decision Helper hosts an embedded version with the
-proposed trade as context.
+Standalone streaming chat. The Decision Helper hosts an embedded version
+that calls `/api/advisor/decide` for one-shot critiques. All advisor
+traffic goes server-side — the Anthropic API key never reaches the
+browser. The model is required to call `evaluate_decision` before
+issuing a verdict and never overrides a deterministic BLOCK.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -411,10 +423,14 @@ advisor** (placeholder), **Zerodha** (placeholder), **Reset everything**.
 
 The reset dialog requires you to type **`RESET`** in a confirm field.
 
-### 7. Zerodha Sync (Step 11 — currently a stub)
+### 7. Zerodha Sync
 
-Read-only. Connect button kicks off the Kite OAuth flow, then renders live
-tables.
+Read-only. **Connect with Kite** opens the Kite login flow. Kite
+redirects back with `?request_token=…&status=success` in the query
+string; the page detects it and POSTs to `/api/zerodha/exchange-token`
+automatically. Once connected, **Funds**, **Positions**, **Holdings**,
+and **Orderbook** tabs render live data. The access token expires daily
+at ~6 am IST — re-connect each trading day.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -509,24 +525,51 @@ POST /api/withdrawals/:id/confirm               → { withdrawal, account }   (R
 POST /api/withdrawals/:id/cancel                → { withdrawal, account }   (R5)
 ```
 
-### AI Advisor *(planned, Step 10)*
+### Decisions
 
 ```
+GET  /api/decisions?limit=N                     → DecisionRecord[]
+```
+
+### AI Advisor
+
+```
+GET  /api/advisor/status                        → { enabled, provider, model, configured }
 POST /api/advisor/decide                        one-shot critique of a proposed trade
+                                                body: { input: NewTradeInput }
+                                                → { verdict, summary, points, rulesAlignment, rules, toolTrace }
 POST /api/advisor/chat                          free-form, server-streamed (SSE)
+                                                body: { conversationId?, messages: {role, content}[] }
+                                                streams: meta, text, tool_use, tool_result, done, error
 POST /api/advisor/portfolio-review              periodic check on open positions
+                                                → { observations, riskFlags, suggestions }
+GET  /api/advisor/conversations                 → [{ conversationId, lastAt, turns }]
+GET  /api/advisor/conversations/:id             → AdvisorMessage[]
 ```
 
-### Zerodha *(planned, Step 11)*
+The deterministic engine wins: even if the LLM disagrees, the response
+verdict reflects the rules-engine output. Tool traces are returned in
+`toolTrace` so you can audit what the model checked.
+
+### Zerodha (Kite Connect)
 
 ```
-GET  /api/zerodha/login-url
-POST /api/zerodha/exchange-token                body: { request_token }
-GET  /api/zerodha/funds
-GET  /api/zerodha/holdings
-GET  /api/zerodha/positions
-GET  /api/zerodha/orders
-POST /api/zerodha/disconnect
+GET  /api/zerodha/status                        → { configured, connected, userId?, userName?, loginAt? }
+GET  /api/zerodha/login-url                     → { url }
+POST /api/zerodha/exchange-token                body: { request_token } → { user }
+GET  /api/zerodha/funds                         → KiteFunds
+GET  /api/zerodha/holdings                      → KiteHolding[]
+GET  /api/zerodha/positions                     → { net, day }
+GET  /api/zerodha/orders                        → KiteOrder[]
+POST /api/zerodha/disconnect                    → { ok: true }
+```
+
+### Backup / restore
+
+```
+GET  /api/backup/export                         → { version, exportedAt, account, trades, withdrawals, decisions, advisorMessages }
+POST /api/backup/import                         body: { ...export-payload, confirm: "IMPORT" }
+                                                wipes everything and reloads
 ```
 
 ### Quick smoke test with curl
@@ -582,8 +625,162 @@ same change.
 - **Backup** the SQLite file directly: `cp apps/server/data/options-trader.sqlite
   ~/options-trader-backup-$(date +%F).sqlite`. The server holds an open
   handle while running but better-sqlite3 + WAL allow safe online copies.
-- **JSON export / import** in Settings is on the Step 12 list and not yet
-  implemented.
+- **JSON export / import** lives in Settings → **Backup & restore**.
+  Import is destructive: it wipes the database first, then loads the
+  payload inside a single transaction. The Zerodha access token is *not*
+  exported — reconnect after restoring.
+
+## Docker
+
+The repo ships a multi-stage Dockerfile and a `docker-compose.yml` that
+runs the backend (Express + SQLite) and serves the prebuilt React app
+from a single port (4000 by default).
+
+```bash
+# Build and run locally — opens http://localhost:4000
+docker compose up --build
+
+# Pass through advisor / broker secrets (or use a .env next to compose)
+ANTHROPIC_API_KEY=sk-ant-… \
+KITE_API_KEY=…  KITE_API_SECRET=… \
+docker compose up --build
+```
+
+Image structure:
+- **Builder stage** — `node:20-bookworm-slim`, installs python3/make/g++
+  for `better-sqlite3`'s native module, runs `npm ci --workspaces` and
+  `npm run build:web`.
+- **Runtime stage** — same base image (so the better-sqlite3 prebuilt
+  matches the libc), runs as a non-root `app` user, serves `/api` plus
+  the static `apps/web/dist` from one Express process via `tsx`.
+
+Persistent state:
+- SQLite lives at `/data/options-trader.sqlite` inside the container,
+  backed by the named volume `options-trader-data` (or whatever you
+  mount). Don't lose this volume.
+
+Container env (override via `docker compose` env vars or an `.env` file):
+
+| Variable            | Default                            | Notes                                                                          |
+| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------ |
+| `PORT`              | `4000`                             | Container-internal port. Map with `HOST_PORT`.                                 |
+| `HOST_PORT`         | `4000`                             | Host port for the published binding.                                           |
+| `DB_PATH`           | `/data/options-trader.sqlite`      | Inside the container; sits on the persistent volume.                           |
+| `WEB_STATIC_DIR`    | `/app/apps/web/dist`               | Where Express serves the bundled SPA from. Empty disables static hosting.      |
+| `ANTHROPIC_API_KEY` | empty                              | Enables `/api/advisor/*`. Without it the advisor returns 409.                  |
+| `AI_PROVIDER`       | `anthropic`                        | Currently only `anthropic` is implemented.                                     |
+| `AI_MODEL`          | `claude-sonnet-4-6`                | Anthropic model id.                                                            |
+| `KITE_API_KEY`      | empty                              | Required for `/api/zerodha/*`.                                                 |
+| `KITE_API_SECRET`   | empty                              | Required for `/api/zerodha/*` (server-side OAuth checksum).                    |
+
+Health check: `GET /api/health` — used by the container's
+`HEALTHCHECK` directive. The compose service marks itself `unhealthy`
+after three consecutive failures.
+
+## Deploying to Amazon Lightsail
+
+The repo ships two GitHub Actions workflows in `.github/workflows/`:
+
+- **`ci.yml`** — runs on every push and PR: install, type-check, tests,
+  Vite build.
+- **`deploy-lightsail.yml`** — runs on push to `main`: builds the Docker
+  image, pushes it to **GHCR** (`ghcr.io/<owner>/<repo>:<sha>` plus
+  `:latest`), then SSHes into a Lightsail VM and runs `docker compose
+  up -d` with the new image.
+
+### One-time setup
+
+1. **Provision a Lightsail Ubuntu instance** (22.04 or 24.04).
+   Recommended: 1 vCPU / 2 GB RAM is enough for a single user. Attach a
+   static IP. In the Lightsail networking panel open TCP port `4000`
+   (or 80/443 if you put nginx in front).
+
+2. **Bootstrap the instance** — SSH in, then:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/lightsail-bootstrap.sh | bash
+   exit  # log out and back in so the docker group takes effect
+   ```
+   The script installs Docker Engine + the compose plugin and creates
+   `~/options-trader/`.
+
+3. **Add GitHub secrets** under *Settings → Secrets and variables → Actions*:
+
+   | Secret               | Value                                                                                           |
+   | -------------------- | ----------------------------------------------------------------------------------------------- |
+   | `LIGHTSAIL_HOST`     | The instance's public IP or static-IP DNS                                                       |
+   | `LIGHTSAIL_USER`     | Usually `ubuntu`                                                                                |
+   | `LIGHTSAIL_SSH_KEY`  | Private key matching the instance's key pair (paste the entire `-----BEGIN…` block)             |
+   | `LIGHTSAIL_SSH_PORT` | Optional, defaults to `22`                                                                      |
+   | `ANTHROPIC_API_KEY`  | Optional — passed into the container at deploy time                                             |
+   | `KITE_API_KEY`       | Optional                                                                                        |
+   | `KITE_API_SECRET`    | Optional                                                                                        |
+
+   And these *Variables* (optional, with defaults):
+
+   | Variable      | Default               | Notes                                                                |
+   | ------------- | --------------------- | -------------------------------------------------------------------- |
+   | `AI_MODEL`    | `claude-sonnet-4-6`   | Anthropic model id                                                   |
+   | `AI_PROVIDER` | `anthropic`           |                                                                      |
+   | `HOST_PORT`   | `4000`                | Host port the container publishes                                    |
+
+4. **Allow the Lightsail VM to read GHCR.** The deploy step performs
+   `docker login ghcr.io` with the repo's `GITHUB_TOKEN` automatically,
+   so no extra secret is needed as long as the workflow runs in the
+   same repo that hosts the image.
+
+### Deploy flow on every push to `main`
+
+```
+GitHub Actions
+  ├─ build-and-push
+  │   ├─ docker buildx build .
+  │   └─ docker push ghcr.io/<owner>/<repo>:<sha>  (and :latest)
+  └─ deploy
+      ├─ scp docker-compose.prod.yml → ~/options-trader/
+      └─ ssh ubuntu@LIGHTSAIL_HOST 'cd ~/options-trader &&
+            docker login ghcr.io <token>
+            write .env (IMAGE, secrets, vars)
+            mv docker-compose.prod.yml docker-compose.yml
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f'
+```
+
+The compose file on the VM (`docker-compose.prod.yml`) only declares
+the service shape — the actual image tag comes from the `IMAGE` env
+var the workflow writes.
+
+### Backups
+
+Snapshot the SQLite volume periodically:
+
+```bash
+ssh ubuntu@LIGHTSAIL_HOST '
+  docker run --rm \
+    -v options-trader-data:/data \
+    -v $HOME:/backup busybox \
+    tar czf /backup/options-trader-$(date +%F).tgz /data'
+```
+
+Or use Settings → **Backup & restore** in the UI to download a JSON
+snapshot.
+
+## Keyboard shortcuts
+
+The AppShell installs a small set of shortcuts (active when no input is
+focused; press `?` for the in-app reminder):
+
+| Keys     | Action                |
+| -------- | --------------------- |
+| `n`      | Open New Trade        |
+| `g d`    | Go to Dashboard       |
+| `g t`    | Go to Trades          |
+| `g w`    | Go to Withdrawals     |
+| `g a`    | Go to AI Advisor      |
+| `g z`    | Go to Zerodha Sync    |
+| `g s`    | Go to Settings        |
+| `Esc`    | Close any open dialog |
+| `?`      | Show this list        |
 
 ## Troubleshooting
 

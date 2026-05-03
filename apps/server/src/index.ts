@@ -1,4 +1,6 @@
-import express, { type ErrorRequestHandler } from 'express';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import express, { type ErrorRequestHandler, type Request, type Response } from 'express';
 import { env } from './env.js';
 import { getDb, closeDb } from './db/index.js';
 import { healthRouter } from './routes/health.js';
@@ -21,6 +23,20 @@ app.use('/api/decisions', decisionsRouter);
 app.use('/api/advisor', advisorRouter);
 app.use('/api/zerodha', zerodhaRouter);
 app.use('/api/backup', backupRouter);
+
+// ─── Optional: serve a built web app at / with SPA fallback ─────────
+if (env.WEB_STATIC_DIR) {
+  const staticDir = resolve(env.WEB_STATIC_DIR);
+  if (existsSync(staticDir)) {
+    app.use(express.static(staticDir));
+    app.get(/^(?!\/api\/).*/, (_req: Request, res: Response) => {
+      res.sendFile(resolve(staticDir, 'index.html'));
+    });
+    console.log(`[server] serving static web from ${staticDir}`);
+  } else {
+    console.warn(`[server] WEB_STATIC_DIR=${staticDir} does not exist; skipping`);
+  }
+}
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   console.error('[server] error', err);

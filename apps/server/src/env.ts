@@ -10,6 +10,8 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional().default(''),
   AI_PROVIDER: z.enum(['anthropic', 'openai']).default('anthropic'),
   AI_MODEL: z.string().default('claude-sonnet-4-6'),
+  /** Absolute path to the built web app to serve at /. Empty = API only. */
+  WEB_STATIC_DIR: z.string().optional().default(''),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

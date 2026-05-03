@@ -1,0 +1,40 @@
+# Single-service compose for local prod-style runs.
+# `docker compose up --build` starts everything on http://localhost:4000.
+#
+# In production (Lightsail), the app is run by docker on the instance —
+# the GitHub Actions workflow builds and pushes the image, then SSHs and
+# does `docker pull && docker compose up -d`. See
+# .github/workflows/deploy-lightsail.yml.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: options-trader:local
+    container_name: options-trader
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-4000}:4000"
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DB_PATH: /data/options-trader.sqlite
+      WEB_STATIC_DIR: /app/apps/web/dist
+      # Pass these through from the shell (or use an .env file next to compose).
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      AI_PROVIDER: "${AI_PROVIDER:-anthropic}"
+      AI_MODEL: "${AI_MODEL:-claude-sonnet-4-6}"
+      KITE_API_KEY: "${KITE_API_KEY:-}"
+      KITE_API_SECRET: "${KITE_API_SECRET:-}"
+    volumes:
+      - options-trader-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  options-trader-data:
