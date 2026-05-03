@@ -100,3 +100,12 @@ export function useCancelWithdrawal() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['withdrawals'] }),
   });
 }
+
+// ── decisions ──────────────────────────────────────────────────────────
+
+export function useDecisions(limit = 25) {
+  return useQuery({
+    queryKey: ['decisions', limit] as const,
+    queryFn: () => api.listDecisions(limit),
+  });
+}

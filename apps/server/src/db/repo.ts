@@ -138,6 +138,37 @@ function rowToDecision(row: DecisionRow): DecisionRecord {
   return d;
 }
 
+export interface ZerodhaSession {
+  userId: string;
+  userName: string;
+  accessToken: string;
+  publicToken: string;
+  loginAt: string;
+  expiresAt?: string;
+}
+
+interface ZerodhaSessionRow {
+  id: number;
+  user_id: string | null;
+  user_name: string | null;
+  access_token: string | null;
+  public_token: string | null;
+  login_at: string | null;
+  expires_at: string | null;
+}
+
+function rowToZerodhaSession(row: ZerodhaSessionRow): ZerodhaSession {
+  const session: ZerodhaSession = {
+    userId: row.user_id ?? '',
+    userName: row.user_name ?? '',
+    accessToken: row.access_token ?? '',
+    publicToken: row.public_token ?? '',
+    loginAt: row.login_at ?? '',
+  };
+  if (row.expires_at) session.expiresAt = row.expires_at;
+  return session;
+}
+
 interface AdvisorMessageRow {
   id: string;
   conversation_id: string;
@@ -364,6 +395,69 @@ export function createRepo(db: Database) {
         .prepare('SELECT * FROM advisor_messages WHERE conversation_id = ? ORDER BY created_at ASC')
         .all(conversationId) as AdvisorMessageRow[];
       return rows.map(rowToAdvisorMessage);
+    },
+
+    listConversations(limit = 20): { conversationId: string; lastAt: string; turns: number }[] {
+      const rows = db
+        .prepare(
+          `SELECT conversation_id AS conversationId,
+                  MAX(created_at) AS lastAt,
+                  COUNT(*)        AS turns
+             FROM advisor_messages
+            GROUP BY conversation_id
+            ORDER BY lastAt DESC
+            LIMIT ?`,
+        )
+        .all(limit) as { conversationId: string; lastAt: string; turns: number }[];
+      return rows;
+    },
+
+    insertAdvisorMessage(m: AdvisorMessage): void {
+      db.prepare(
+        `INSERT INTO advisor_messages (id, conversation_id, role, content, tool_payload, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        m.id,
+        m.conversationId,
+        m.role,
+        m.content,
+        m.toolPayload ?? null,
+        m.createdAt,
+      );
+    },
+
+    // ── zerodha sessions ───────────────────────────────────────────────
+    getZerodhaSession(): ZerodhaSession | null {
+      const row = db
+        .prepare('SELECT * FROM zerodha_sessions WHERE id = 1')
+        .get() as ZerodhaSessionRow | undefined;
+      if (!row || !row.access_token) return null;
+      return rowToZerodhaSession(row);
+    },
+
+    putZerodhaSession(session: ZerodhaSession): void {
+      db.prepare(
+        `INSERT INTO zerodha_sessions (id, user_id, user_name, access_token, public_token, login_at, expires_at)
+         VALUES (1, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           user_id      = excluded.user_id,
+           user_name    = excluded.user_name,
+           access_token = excluded.access_token,
+           public_token = excluded.public_token,
+           login_at     = excluded.login_at,
+           expires_at   = excluded.expires_at`,
+      ).run(
+        session.userId,
+        session.userName,
+        session.accessToken,
+        session.publicToken,
+        session.loginAt,
+        session.expiresAt ?? null,
+      );
+    },
+
+    clearZerodhaSession(): void {
+      db.prepare('DELETE FROM zerodha_sessions WHERE id = 1').run();
     },
 
     // ── introspection (used by /api/health/db) ─────────────────────────

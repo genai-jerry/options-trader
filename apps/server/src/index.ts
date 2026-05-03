@@ -5,6 +5,10 @@ import { healthRouter } from './routes/health.js';
 import { accountRouter } from './routes/account.js';
 import { tradesRouter } from './routes/trades.js';
 import { withdrawalsRouter } from './routes/withdrawals.js';
+import { decisionsRouter } from './routes/decisions.js';
+import { advisorRouter } from './routes/advisor.js';
+import { zerodhaRouter } from './routes/zerodha.js';
+import { backupRouter } from './routes/backup.js';
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -13,6 +17,10 @@ app.use('/api', healthRouter);
 app.use('/api/account', accountRouter);
 app.use('/api/trades', tradesRouter);
 app.use('/api/withdrawals', withdrawalsRouter);
+app.use('/api/decisions', decisionsRouter);
+app.use('/api/advisor', advisorRouter);
+app.use('/api/zerodha', zerodhaRouter);
+app.use('/api/backup', backupRouter);
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   console.error('[server] error', err);

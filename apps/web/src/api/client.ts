@@ -1,10 +1,86 @@
 import type {
   Account,
+  AdvisorMessage,
   DecisionRecord,
   NewTradeInput,
   PendingWithdrawal,
   Trade,
 } from '@options-trader/shared';
+
+export interface AdvisorStatus {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  configured: boolean;
+}
+
+export interface AdvisorDecideResponse {
+  verdict: 'GO' | 'WARN' | 'BLOCK';
+  summary: string;
+  points: string[];
+  rulesAlignment: string;
+  rules: DecisionRecord;
+  toolTrace: { name: string; output: string }[];
+}
+
+export interface AdvisorReview {
+  observations: string[];
+  riskFlags: string[];
+  suggestions: string[];
+}
+
+export interface ZerodhaStatus {
+  configured: boolean;
+  connected: boolean;
+  userId?: string;
+  userName?: string;
+  loginAt?: string;
+}
+
+export interface KiteFundsSegment {
+  enabled: boolean;
+  net: number;
+  available: { cash: number; opening_balance: number; live_balance: number; collateral: number };
+  utilised: { debits: number; m2m_realised: number; m2m_unrealised: number; option_premium: number; span: number };
+}
+
+export interface KiteHolding {
+  tradingsymbol: string;
+  exchange: string;
+  quantity: number;
+  average_price: number;
+  last_price: number;
+  pnl: number;
+  day_change: number;
+  day_change_percentage: number;
+}
+
+export interface KitePosition {
+  tradingsymbol: string;
+  exchange: string;
+  product: string;
+  quantity: number;
+  average_price: number;
+  last_price: number;
+  pnl: number;
+  m2m: number;
+}
+
+export interface KiteOrder {
+  order_id: string;
+  status: string;
+  tradingsymbol: string;
+  exchange: string;
+  transaction_type: string;
+  order_type: string;
+  product: string;
+  quantity: number;
+  filled_quantity: number;
+  pending_quantity: number;
+  price: number;
+  average_price: number;
+  order_timestamp: string;
+}
 
 class HttpError extends Error {
   status: number;
@@ -85,6 +161,44 @@ export const api = {
       'POST',
       `/api/withdrawals/${encodeURIComponent(id)}/cancel`,
     ),
+
+  // ── decisions ────────────────────────────────────────────────────────
+  listDecisions: (limit = 25) =>
+    request<DecisionRecord[]>('GET', '/api/decisions', undefined, { limit: String(limit) }),
+
+  // ── advisor ──────────────────────────────────────────────────────────
+  advisorStatus: () => request<AdvisorStatus>('GET', '/api/advisor/status'),
+  advisorDecide: (input: NewTradeInput) =>
+    request<AdvisorDecideResponse>('POST', '/api/advisor/decide', { input }),
+  advisorReview: () =>
+    request<AdvisorReview>('POST', '/api/advisor/portfolio-review'),
+  advisorConversations: () =>
+    request<{ conversationId: string; lastAt: string; turns: number }[]>(
+      'GET',
+      '/api/advisor/conversations',
+    ),
+  advisorConversation: (id: string) =>
+    request<AdvisorMessage[]>('GET', `/api/advisor/conversations/${encodeURIComponent(id)}`),
+
+  // ── zerodha ──────────────────────────────────────────────────────────
+  zerodhaStatus: () => request<ZerodhaStatus>('GET', '/api/zerodha/status'),
+  zerodhaLoginUrl: () => request<{ url: string }>('GET', '/api/zerodha/login-url'),
+  zerodhaExchangeToken: (request_token: string) =>
+    request<{ user: { user_id: string; user_name: string; email?: string } }>(
+      'POST',
+      '/api/zerodha/exchange-token',
+      { request_token },
+    ),
+  zerodhaFunds: () =>
+    request<{ equity: KiteFundsSegment; commodity: KiteFundsSegment }>(
+      'GET',
+      '/api/zerodha/funds',
+    ),
+  zerodhaHoldings: () => request<KiteHolding[]>('GET', '/api/zerodha/holdings'),
+  zerodhaPositions: () =>
+    request<{ net: KitePosition[]; day: KitePosition[] }>('GET', '/api/zerodha/positions'),
+  zerodhaOrders: () => request<KiteOrder[]>('GET', '/api/zerodha/orders'),
+  zerodhaDisconnect: () => request<{ ok: boolean }>('POST', '/api/zerodha/disconnect'),
 
   // ── health ───────────────────────────────────────────────────────────
   healthDb: () => request<{ status: string; schemaVersion: number; tables: string[] }>('GET', '/api/health/db'),

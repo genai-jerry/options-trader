@@ -50,14 +50,7 @@ export function Settings() {
 
       <PrincipalSection account={account} hasTrades={hasTrades} />
       <PreferencesSection account={account} />
-      <DeferredSection
-        title="AI advisor"
-        body="Provider/model selection and API key configuration land in Step 10. The AI toggle above already gates server-side advisor calls."
-      />
-      <DeferredSection
-        title="Zerodha"
-        body="Kite Connect API key/secret and OAuth flow land in Step 11. Credentials live in apps/server/.env until then."
-      />
+      <BackupSection />
       <ResetSection hasTrades={hasTrades} />
     </Stack>
   );
@@ -229,18 +222,103 @@ function PreferencesSection({ account }: { account: Account }) {
   );
 }
 
-// ─── Deferred section (placeholder for steps 10 and 11) ───────────────
+// ─── Backup / restore ─────────────────────────────────────────────────
 
-function DeferredSection({ title, body }: { title: string; body: string }) {
+function BackupSection() {
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const exportNow = async () => {
+    setError(null);
+    try {
+      const res = await fetch('/api/backup/export');
+      if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `options-trader-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export failed.');
+    }
+  };
+
+  const importFile = async (file: File) => {
+    if (
+      !window.confirm(
+        'Importing will WIPE all current data and replace it with the file contents. Continue?',
+      )
+    ) {
+      return;
+    }
+    setImporting(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const res = await fetch('/api/backup/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, confirm: 'IMPORT' }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `Import failed: ${res.status}`);
+      }
+      const out = (await res.json()) as { trades: number };
+      setSuccess(`Imported ${out.trades} trade(s). Reload the page to see the new state.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed.');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
-    <Card variant="outlined">
+    <Card>
       <CardContent>
-        <Typography variant="h6" color="text.secondary">
-          {title}
+        <Typography variant="h6">Backup & restore</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Export the full state as JSON, or import a previous export. Import is
+          destructive — it wipes the database first. The Zerodha access token is not
+          included; reconnect after restoring.
         </Typography>
-        <Typography variant="body2" color="text.secondary">
-          {body}
-        </Typography>
+
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+          <Button variant="outlined" onClick={exportNow}>
+            Export JSON
+          </Button>
+          <Button variant="outlined" component="label" disabled={importing}>
+            {importing ? 'Importing…' : 'Import JSON…'}
+            <input
+              hidden
+              type="file"
+              accept="application/json"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void importFile(f);
+                e.target.value = '';
+              }}
+            />
+          </Button>
+        </Stack>
+
+        {error && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {error}
+          </Alert>
+        )}
+        {success && (
+          <Alert severity="success" sx={{ mt: 2 }}>
+            {success}
+          </Alert>
+        )}
       </CardContent>
     </Card>
   );
