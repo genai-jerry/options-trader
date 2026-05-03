@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -15,6 +15,8 @@ import {
   InputAdornment,
   MenuItem,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   Typography,
 } from '@mui/material';
@@ -25,34 +27,15 @@ import {
   formatINR,
   rupeesToPaise,
   type CheckResult,
+  type NewTradeInput,
   type Verdict,
 } from '@options-trader/shared';
 import { HttpError } from '../api/client';
 import { useAccount, useCreateTrade, useTrades } from '../api/hooks';
 import { AdvisorPanel } from '../components/AdvisorPanel';
 
-// ─── Form schema (rupees in the UI, converted to paise on submit) ─────
-
-const FormSchema = z
-  .object({
-    symbol: z.string().min(1, 'Required').toUpperCase(),
-    instrument: z.enum(['CE', 'PE', 'FUT']),
-    strikeRupees: z.coerce.number().nonnegative().optional(),
-    expiry: z.string().min(1, 'Required'),
-    lotSize: z.coerce.number().int().positive('> 0'),
-    qty: z.coerce.number().int().positive('> 0'),
-    entryRupees: z.coerce.number().nonnegative('>= 0'),
-    expectedExitRupees: z.coerce.number().nonnegative('>= 0'),
-    maxLossRupees: z.coerce.number().nonnegative('>= 0'),
-    notes: z.string().optional(),
-    agentSource: z.string().optional(),
-  })
-  .refine(
-    (v) => (v.instrument === 'FUT' ? true : v.strikeRupees !== undefined && v.strikeRupees > 0),
-    { message: 'Strike is required for CE/PE', path: ['strikeRupees'] },
-  );
-
-type FormValues = z.infer<typeof FormSchema>;
+type Mode = 'detailed' | 'quick';
+const MODE_STORAGE_KEY = 'options-trader.newTrade.mode';
 
 const VERDICT_COLOR: Record<Verdict, 'success' | 'warning' | 'error'> = {
   GO: 'success',
@@ -67,69 +50,35 @@ const STATUS_COLOR: Record<CheckResult['status'], 'success' | 'warning' | 'error
 };
 
 export function NewTrade() {
-  const navigate = useNavigate();
   const accountQ = useAccount();
   const openTradesQ = useTrades({ status: 'OPEN' });
   const createTrade = useCreateTrade();
+  const navigate = useNavigate();
 
-  const { register, handleSubmit, watch, formState } = useForm<FormValues>({
-    resolver: zodResolver(FormSchema),
-    mode: 'onChange',
-    defaultValues: {
-      symbol: '',
-      instrument: 'CE',
-      expiry: '',
-      lotSize: 50,
-      qty: 1,
-      entryRupees: 0,
-      expectedExitRupees: 0,
-      maxLossRupees: 0,
-    },
+  const [mode, setMode] = useState<Mode>(() => {
+    const stored = window.localStorage.getItem(MODE_STORAGE_KEY);
+    return stored === 'quick' || stored === 'detailed' ? stored : 'detailed';
   });
+  useEffect(() => {
+    window.localStorage.setItem(MODE_STORAGE_KEY, mode);
+  }, [mode]);
 
-  const values = watch();
+  // The currently-being-edited input drives the verdict + computed + advisor
+  // panels. Both forms call setInput() whenever their fields change.
+  const [input, setInput] = useState<NewTradeInput | null>(null);
 
   const decision = useMemo(() => {
     if (!accountQ.data || !openTradesQ.data) return null;
     if (accountQ.data.principalX === null) return null;
-    if (!values.symbol || !values.expiry) return null;
-    if (!values.entryRupees || !values.qty || !values.lotSize) return null;
-
-    const input = {
-      symbol: values.symbol.toUpperCase(),
-      instrument: values.instrument,
-      ...(values.instrument !== 'FUT' && values.strikeRupees
-        ? { strike: rupeesToPaise(values.strikeRupees) }
-        : {}),
-      expiry: values.expiry,
-      lotSize: values.lotSize,
-      qty: values.qty,
-      entryPrice: rupeesToPaise(values.entryRupees),
-      expectedExit: rupeesToPaise(values.expectedExitRupees),
-      maxAcceptableLoss: rupeesToPaise(values.maxLossRupees),
-      ...(values.notes ? { notes: values.notes } : {}),
-      ...(values.agentSource ? { agentSource: values.agentSource } : {}),
-    };
+    if (!input) return null;
     const snapshot = accountToSnapshot(accountQ.data);
     return evaluateDecision(input, snapshot, openTradesQ.data, {
       id: 'preview',
       decidedAt: new Date().toISOString(),
     });
-  }, [accountQ.data, openTradesQ.data, values]);
+  }, [accountQ.data, openTradesQ.data, input]);
 
-  const computed = useMemo(() => {
-    if (!values.entryRupees || !values.qty || !values.lotSize) return null;
-    return computeDecisionInputs({
-      symbol: values.symbol,
-      instrument: values.instrument,
-      expiry: values.expiry,
-      lotSize: values.lotSize,
-      qty: values.qty,
-      entryPrice: rupeesToPaise(values.entryRupees),
-      expectedExit: rupeesToPaise(values.expectedExitRupees),
-      maxAcceptableLoss: rupeesToPaise(values.maxLossRupees),
-    });
-  }, [values]);
+  const computed = useMemo(() => (input ? computeDecisionInputs(input) : null), [input]);
 
   if (accountQ.isLoading || openTradesQ.isLoading) return <CircularProgress />;
   if (!accountQ.data) return <Alert severity="error">Failed to load account.</Alert>;
@@ -144,182 +93,52 @@ export function NewTrade() {
     );
   }
 
-  const onSubmit = (data: FormValues) => {
-    const input = {
-      symbol: data.symbol.toUpperCase(),
-      instrument: data.instrument,
-      ...(data.instrument !== 'FUT' && data.strikeRupees
-        ? { strike: rupeesToPaise(data.strikeRupees) }
-        : {}),
-      expiry: data.expiry,
-      lotSize: data.lotSize,
-      qty: data.qty,
-      entryPrice: rupeesToPaise(data.entryRupees),
-      expectedExit: rupeesToPaise(data.expectedExitRupees),
-      maxAcceptableLoss: rupeesToPaise(data.maxLossRupees),
-      ...(data.notes ? { notes: data.notes } : {}),
-      ...(data.agentSource ? { agentSource: data.agentSource } : {}),
-    };
-    createTrade.mutate(input, {
-      onSuccess: () => navigate('/trades'),
-    });
+  const onSubmit = (built: NewTradeInput): void => {
+    createTrade.mutate(built, { onSuccess: () => navigate('/trades') });
   };
 
-  const submitDisabled =
-    !decision ||
-    decision.verdict === 'BLOCK' ||
-    !formState.isValid ||
-    createTrade.isPending;
+  const submitBlocked = decision?.verdict === 'BLOCK';
 
   return (
     <Stack spacing={3}>
-      <Typography variant="h4">New Trade</Typography>
+      <Box display="flex" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
+        <Typography variant="h4">New Trade</Typography>
+        <Tabs value={mode} onChange={(_, v) => setMode(v as Mode)}>
+          <Tab value="detailed" label="Detailed" />
+          <Tab value="quick" label="Quick (advisor mode)" />
+        </Tabs>
+      </Box>
 
       <Box display="grid" gridTemplateColumns={{ xs: '1fr', md: '2fr 1fr' }} gap={3}>
-        {/* ── Form ─────────────────────────────────────────────────────── */}
-        <Card>
-          <CardContent component="form" onSubmit={handleSubmit(onSubmit)}>
-            <Typography variant="h6" gutterBottom>
-              Trade idea
-            </Typography>
-            <Stack spacing={2}>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-                <TextField
-                  label="Symbol"
-                  fullWidth
-                  error={!!formState.errors.symbol}
-                  helperText={formState.errors.symbol?.message ?? 'e.g. NIFTY, BANKNIFTY'}
-                  {...register('symbol')}
-                />
-                <TextField
-                  label="Instrument"
-                  select
-                  fullWidth
-                  defaultValue="CE"
-                  {...register('instrument')}
-                >
-                  <MenuItem value="CE">Call (CE)</MenuItem>
-                  <MenuItem value="PE">Put (PE)</MenuItem>
-                  <MenuItem value="FUT">Future (FUT)</MenuItem>
-                </TextField>
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-                <TextField
-                  label="Strike"
-                  type="number"
-                  fullWidth
-                  disabled={values.instrument === 'FUT'}
-                  error={!!formState.errors.strikeRupees}
-                  helperText={
-                    formState.errors.strikeRupees?.message ?? 'Required for CE/PE'
-                  }
-                  slotProps={{
-                    input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
-                  }}
-                  {...register('strikeRupees')}
-                />
-                <TextField
-                  label="Expiry"
-                  type="date"
-                  fullWidth
-                  slotProps={{ inputLabel: { shrink: true } }}
-                  error={!!formState.errors.expiry}
-                  helperText={formState.errors.expiry?.message}
-                  {...register('expiry')}
-                />
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-                <TextField
-                  label="Lot size"
-                  type="number"
-                  fullWidth
-                  error={!!formState.errors.lotSize}
-                  helperText={formState.errors.lotSize?.message}
-                  {...register('lotSize')}
-                />
-                <TextField
-                  label="Quantity (lots)"
-                  type="number"
-                  fullWidth
-                  error={!!formState.errors.qty}
-                  helperText={formState.errors.qty?.message}
-                  {...register('qty')}
-                />
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-                <TextField
-                  label="Entry price"
-                  type="number"
-                  fullWidth
-                  inputProps={{ step: 0.05 }}
-                  error={!!formState.errors.entryRupees}
-                  helperText={formState.errors.entryRupees?.message ?? 'per unit'}
-                  slotProps={{
-                    input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
-                  }}
-                  {...register('entryRupees')}
-                />
-                <TextField
-                  label="Expected exit"
-                  type="number"
-                  fullWidth
-                  inputProps={{ step: 0.05 }}
-                  error={!!formState.errors.expectedExitRupees}
-                  helperText={formState.errors.expectedExitRupees?.message ?? 'per unit'}
-                  slotProps={{
-                    input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
-                  }}
-                  {...register('expectedExitRupees')}
-                />
-              </Stack>
-
-              <TextField
-                label="Max acceptable loss"
-                type="number"
-                fullWidth
-                inputProps={{ step: 1 }}
-                error={!!formState.errors.maxLossRupees}
-                helperText={
-                  formState.errors.maxLossRupees?.message ?? 'Total loss you can stomach'
-                }
-                slotProps={{
-                  input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
-                }}
-                {...register('maxLossRupees')}
-              />
-
-              <TextField label="Notes" fullWidth multiline rows={2} {...register('notes')} />
-              <TextField
-                label="Agent source"
-                fullWidth
-                helperText="Which agent / source suggested this?"
-                {...register('agentSource')}
-              />
-
-              {createTrade.isError && (
-                <Alert severity="error">
-                  {createTrade.error instanceof HttpError
-                    ? createTrade.error.message
-                    : 'Failed to create trade.'}
-                </Alert>
-              )}
-
-              <Box>
-                <Button
-                  type="submit"
-                  variant="contained"
-                  size="large"
-                  disabled={submitDisabled}
-                >
-                  {createTrade.isPending ? 'Submitting…' : 'Accept & open trade'}
-                </Button>
-              </Box>
-            </Stack>
-          </CardContent>
-        </Card>
+        {mode === 'detailed' ? (
+          <DetailedForm
+            onChange={setInput}
+            onSubmit={onSubmit}
+            submitting={createTrade.isPending}
+            submitBlocked={submitBlocked}
+            error={
+              createTrade.isError
+                ? createTrade.error instanceof HttpError
+                  ? createTrade.error.message
+                  : 'Failed to create trade.'
+                : null
+            }
+          />
+        ) : (
+          <QuickForm
+            onChange={setInput}
+            onSubmit={onSubmit}
+            submitting={createTrade.isPending}
+            submitBlocked={submitBlocked}
+            error={
+              createTrade.isError
+                ? createTrade.error instanceof HttpError
+                  ? createTrade.error.message
+                  : 'Failed to create trade.'
+                : null
+            }
+          />
+        )}
 
         {/* ── Verdict panel ────────────────────────────────────────────── */}
         <Stack spacing={2}>
@@ -364,14 +183,11 @@ export function NewTrade() {
                 </Typography>
                 <Stack spacing={0.5} sx={{ mt: 1 }}>
                   <Row label="Capital required" value={formatINR(computed.capitalRequired)} />
-                  <Row
-                    label="Expected reward"
-                    value={formatINR(computed.expectedReward)}
-                  />
+                  <Row label="Expected reward" value={formatINR(computed.expectedReward)} />
                   <Row
                     label="Reward/Risk"
                     value={
-                      values.maxLossRupees > 0
+                      input && input.maxAcceptableLoss > 0
                         ? computed.rewardRiskRatio.toFixed(2)
                         : '—'
                     }
@@ -389,13 +205,390 @@ export function NewTrade() {
             </Card>
           )}
 
-          <AdvisorPanel
-            input={decision ? decision.input : null}
-            enabled={account.aiEnabled}
-          />
+          <AdvisorPanel input={input} enabled={account.aiEnabled} />
         </Stack>
       </Box>
     </Stack>
+  );
+}
+
+// ─── Detailed form ──────────────────────────────────────────────────
+
+const DetailedSchema = z
+  .object({
+    symbol: z.string().min(1, 'Required').toUpperCase(),
+    instrument: z.enum(['CE', 'PE', 'FUT']),
+    strikeRupees: z.coerce.number().nonnegative().optional(),
+    expiry: z.string().min(1, 'Required'),
+    lotSize: z.coerce.number().int().positive('> 0'),
+    qty: z.coerce.number().int().positive('> 0'),
+    entryRupees: z.coerce.number().nonnegative('>= 0'),
+    expectedExitRupees: z.coerce.number().nonnegative('>= 0'),
+    maxLossRupees: z.coerce.number().nonnegative('>= 0'),
+    notes: z.string().optional(),
+    agentSource: z.string().optional(),
+  })
+  .refine(
+    (v) => (v.instrument === 'FUT' ? true : v.strikeRupees !== undefined && v.strikeRupees > 0),
+    { message: 'Strike is required for CE/PE', path: ['strikeRupees'] },
+  );
+type DetailedValues = z.infer<typeof DetailedSchema>;
+
+function detailedToInput(data: DetailedValues): NewTradeInput {
+  return {
+    symbol: data.symbol.toUpperCase(),
+    instrument: data.instrument,
+    ...(data.instrument !== 'FUT' && data.strikeRupees
+      ? { strike: rupeesToPaise(data.strikeRupees) }
+      : {}),
+    expiry: data.expiry,
+    lotSize: data.lotSize,
+    qty: data.qty,
+    entryPrice: rupeesToPaise(data.entryRupees),
+    expectedExit: rupeesToPaise(data.expectedExitRupees),
+    maxAcceptableLoss: rupeesToPaise(data.maxLossRupees),
+    ...(data.notes ? { notes: data.notes } : {}),
+    ...(data.agentSource ? { agentSource: data.agentSource } : {}),
+  };
+}
+
+interface FormProps {
+  onChange: (input: NewTradeInput | null) => void;
+  onSubmit: (input: NewTradeInput) => void;
+  submitting: boolean;
+  submitBlocked: boolean;
+  error: string | null;
+}
+
+function DetailedForm({ onChange, onSubmit, submitting, submitBlocked, error }: FormProps) {
+  const { register, handleSubmit, watch, formState } = useForm<DetailedValues>({
+    resolver: zodResolver(DetailedSchema),
+    mode: 'onChange',
+    defaultValues: {
+      symbol: '',
+      instrument: 'CE',
+      expiry: '',
+      lotSize: 50,
+      qty: 1,
+      entryRupees: 0,
+      expectedExitRupees: 0,
+      maxLossRupees: 0,
+    },
+  });
+  const values = watch();
+
+  useEffect(() => {
+    if (
+      !values.symbol ||
+      !values.expiry ||
+      !values.entryRupees ||
+      !values.qty ||
+      !values.lotSize
+    ) {
+      onChange(null);
+      return;
+    }
+    onChange(detailedToInput(values));
+  }, [values, onChange]);
+
+  const submit = handleSubmit((data) => onSubmit(detailedToInput(data)));
+  const submitDisabled = !formState.isValid || submitting || submitBlocked;
+
+  return (
+    <Card>
+      <CardContent component="form" onSubmit={submit}>
+        <Typography variant="h6" gutterBottom>
+          Trade idea
+        </Typography>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <TextField
+              label="Symbol"
+              fullWidth
+              error={!!formState.errors.symbol}
+              helperText={formState.errors.symbol?.message ?? 'e.g. NIFTY, BANKNIFTY'}
+              {...register('symbol')}
+            />
+            <TextField
+              label="Instrument"
+              select
+              fullWidth
+              defaultValue="CE"
+              {...register('instrument')}
+            >
+              <MenuItem value="CE">Call (CE)</MenuItem>
+              <MenuItem value="PE">Put (PE)</MenuItem>
+              <MenuItem value="FUT">Future (FUT)</MenuItem>
+            </TextField>
+          </Stack>
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <TextField
+              label="Strike"
+              type="number"
+              fullWidth
+              disabled={values.instrument === 'FUT'}
+              error={!!formState.errors.strikeRupees}
+              helperText={formState.errors.strikeRupees?.message ?? 'Required for CE/PE'}
+              slotProps={{
+                input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
+              }}
+              {...register('strikeRupees')}
+            />
+            <TextField
+              label="Expiry"
+              type="date"
+              fullWidth
+              slotProps={{ inputLabel: { shrink: true } }}
+              error={!!formState.errors.expiry}
+              helperText={formState.errors.expiry?.message}
+              {...register('expiry')}
+            />
+          </Stack>
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <TextField
+              label="Lot size"
+              type="number"
+              fullWidth
+              error={!!formState.errors.lotSize}
+              helperText={formState.errors.lotSize?.message}
+              {...register('lotSize')}
+            />
+            <TextField
+              label="Quantity (lots)"
+              type="number"
+              fullWidth
+              error={!!formState.errors.qty}
+              helperText={formState.errors.qty?.message}
+              {...register('qty')}
+            />
+          </Stack>
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <TextField
+              label="Entry price"
+              type="number"
+              fullWidth
+              inputProps={{ step: 0.05 }}
+              error={!!formState.errors.entryRupees}
+              helperText={formState.errors.entryRupees?.message ?? 'per unit'}
+              slotProps={{
+                input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
+              }}
+              {...register('entryRupees')}
+            />
+            <TextField
+              label="Expected exit"
+              type="number"
+              fullWidth
+              inputProps={{ step: 0.05 }}
+              error={!!formState.errors.expectedExitRupees}
+              helperText={formState.errors.expectedExitRupees?.message ?? 'per unit'}
+              slotProps={{
+                input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
+              }}
+              {...register('expectedExitRupees')}
+            />
+          </Stack>
+
+          <TextField
+            label="Max acceptable loss"
+            type="number"
+            fullWidth
+            inputProps={{ step: 1 }}
+            error={!!formState.errors.maxLossRupees}
+            helperText={formState.errors.maxLossRupees?.message ?? 'Total loss you can stomach'}
+            slotProps={{
+              input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
+            }}
+            {...register('maxLossRupees')}
+          />
+
+          <TextField label="Notes" fullWidth multiline rows={2} {...register('notes')} />
+          <TextField
+            label="Agent source"
+            fullWidth
+            helperText="Which agent / source suggested this?"
+            {...register('agentSource')}
+          />
+
+          {error && <Alert severity="error">{error}</Alert>}
+
+          <Box>
+            <Button type="submit" variant="contained" size="large" disabled={submitDisabled}>
+              {submitting ? 'Submitting…' : 'Accept & open trade'}
+            </Button>
+          </Box>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Quick form (advisor-trusted: only money matters) ───────────────
+
+const QuickSchema = z.object({
+  label: z.string().optional(),
+  agentSource: z.string().optional(),
+  notes: z.string().optional(),
+  capitalRupees: z.coerce.number().positive('Must be > 0'),
+  expectedExitRupees: z.coerce.number().nonnegative('Must be >= 0'),
+  maxLossRupees: z.coerce.number().positive('Must be > 0'),
+});
+type QuickValues = z.infer<typeof QuickSchema>;
+
+/**
+ * Map a quick-mode submission to a NewTradeInput.
+ *
+ * Quick mode treats the trade as a single unit (qty=1, lotSize=1) so that
+ * `entryPrice` and `expectedExit` become total rupee amounts directly. The
+ * deterministic engine still computes capitalRequired = entryPrice × qty
+ * × lotSize, which falls out to the user-entered total. All checks
+ * (C1–C6) remain meaningful.
+ *
+ * Symbol must be unique (C6 fires on duplicate OPEN symbols), so when no
+ * label is provided we tag with a base36 timestamp suffix.
+ */
+function quickToInput(data: QuickValues): NewTradeInput {
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + 30);
+  const fallbackId = Date.now().toString(36).toUpperCase();
+  const symbol = (data.label?.trim() || `ADVISOR-${fallbackId}`)
+    .toUpperCase()
+    .slice(0, 64);
+
+  return {
+    symbol,
+    instrument: 'FUT',
+    expiry: expiry.toISOString().slice(0, 10),
+    lotSize: 1,
+    qty: 1,
+    entryPrice: rupeesToPaise(data.capitalRupees),
+    expectedExit: rupeesToPaise(data.expectedExitRupees),
+    maxAcceptableLoss: rupeesToPaise(data.maxLossRupees),
+    ...(data.notes ? { notes: data.notes } : {}),
+    ...(data.agentSource ? { agentSource: data.agentSource } : {}),
+  };
+}
+
+function QuickForm({ onChange, onSubmit, submitting, submitBlocked, error }: FormProps) {
+  const { register, handleSubmit, watch, formState } = useForm<QuickValues>({
+    resolver: zodResolver(QuickSchema),
+    mode: 'onChange',
+    defaultValues: {
+      label: '',
+      agentSource: '',
+      notes: '',
+      capitalRupees: 0,
+      expectedExitRupees: 0,
+      maxLossRupees: 0,
+    },
+  });
+  const values = watch();
+
+  useEffect(() => {
+    if (!values.capitalRupees || !values.maxLossRupees) {
+      onChange(null);
+      return;
+    }
+    onChange(quickToInput(values));
+  }, [values, onChange]);
+
+  const submit = handleSubmit((data) => onSubmit(quickToInput(data)));
+  const submitDisabled = !formState.isValid || submitting || submitBlocked;
+
+  return (
+    <Card>
+      <CardContent component="form" onSubmit={submit}>
+        <Typography variant="h6">Quick trade</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          For advisor-recommended trades where you trust the symbol and contract
+          details. Only the three money fields drive the rules engine — the trade
+          is recorded as a single FUT-style unit (lot size 1, qty 1) with a
+          30-day expiry. All checks (C1–C6) still run against your live state.
+        </Typography>
+
+        <Stack spacing={2}>
+          <TextField
+            label="Capital deployed"
+            type="number"
+            fullWidth
+            autoFocus
+            inputProps={{ step: 1 }}
+            error={!!formState.errors.capitalRupees}
+            helperText={
+              formState.errors.capitalRupees?.message ??
+              'Total ₹ committed (debited from corpus on Accept).'
+            }
+            slotProps={{
+              input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
+            }}
+            {...register('capitalRupees')}
+          />
+
+          <TextField
+            label="Expected exit value"
+            type="number"
+            fullWidth
+            inputProps={{ step: 1 }}
+            error={!!formState.errors.expectedExitRupees}
+            helperText={
+              formState.errors.expectedExitRupees?.message ??
+              'Total ₹ you expect to walk away with.'
+            }
+            slotProps={{
+              input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
+            }}
+            {...register('expectedExitRupees')}
+          />
+
+          <TextField
+            label="Max acceptable loss"
+            type="number"
+            fullWidth
+            inputProps={{ step: 1 }}
+            error={!!formState.errors.maxLossRupees}
+            helperText={
+              formState.errors.maxLossRupees?.message ??
+              'The most you are willing to lose on this trade.'
+            }
+            slotProps={{
+              input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
+            }}
+            {...register('maxLossRupees')}
+          />
+
+          <Divider>Optional</Divider>
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <TextField
+              label="Label"
+              fullWidth
+              placeholder="e.g. NIFTY-MAY-CE"
+              helperText="Shown in the Trades list. Auto-generated if blank."
+              {...register('label')}
+            />
+            <TextField
+              label="Agent source"
+              fullWidth
+              placeholder="e.g. Claude, my analyst"
+              {...register('agentSource')}
+            />
+          </Stack>
+
+          <TextField label="Notes" fullWidth multiline rows={2} {...register('notes')} />
+
+          {error && <Alert severity="error">{error}</Alert>}
+
+          <Box>
+            <Button type="submit" variant="contained" size="large" disabled={submitDisabled}>
+              {submitting ? 'Submitting…' : 'Accept & open trade'}
+            </Button>
+          </Box>
+        </Stack>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -411,4 +604,3 @@ function Row({ label, value }: { label: string; value: string }) {
     </Box>
   );
 }
-

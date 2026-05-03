@@ -342,10 +342,37 @@ a toast.
 
 ### 3. New Trade — Decision Helper
 
-Form on the left, deterministic verdict in the middle, AI advisor on the
-right. The verdict updates live as you type; **Accept** posts the trade.
-The server re-runs the rules engine and rejects BLOCK with HTTP 409 even
-if the UI's local check passed.
+A tab toggle at the top picks the input style:
+
+- **Detailed** — full form (symbol, instrument, strike, expiry, lot
+  size, qty, entry/expected/max-loss per unit). Use this when you're
+  driving the trade yourself.
+- **Quick (advisor mode)** — only three money fields plus optional
+  label, agent source, and notes. Use this when an advisor recommended
+  the trade and you only care about the risk numbers. The form records
+  the trade as a single FUT-style unit (`qty=1, lotSize=1, expiry=today
+  +30d`) so the entered amounts are totals; every check (C1–C6) still
+  runs against your live account.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ New Trade                          [ Detailed | Quick (advisor mode) ]   │
+├──────────────────────────────────┬──────────────────┬────────────────────┤
+│  QUICK FORM                      │  VERDICT         │  AI ADVISOR        │
+│  Capital deployed   [ ₹ 50000 ]  │  ┌────────────┐  │  ┌──────────────┐  │
+│  Expected exit val. [ ₹ 70000 ]  │  │    GO      │  │  │ Streaming…   │  │
+│  Max acceptable loss[ ₹ 15000 ]  │  └────────────┘  │  │              │  │
+│  ──── Optional ────              │  C1 phase OK     │  │              │  │
+│  Label              [_________]  │  C2 cap   OK     │  │              │  │
+│  Agent source       [_________]  │  C3 floor OK     │  │              │  │
+│  Notes              [_________]  │  C4 R/R 1.33 ⚠   │  └──────────────┘  │
+│                                  │  C5 size 50% ⚠   │                    │
+│  [   Accept & open trade   ]     │  C6 dup OK       │                    │
+└──────────────────────────────────┴──────────────────┴────────────────────┘
+```
+
+The toggle is sticky (saved in `localStorage` as
+`options-trader.newTrade.mode`).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
