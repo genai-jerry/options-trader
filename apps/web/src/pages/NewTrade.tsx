@@ -57,7 +57,7 @@ export function NewTrade() {
 
   const [mode, setMode] = useState<Mode>(() => {
     const stored = window.localStorage.getItem(MODE_STORAGE_KEY);
-    return stored === 'quick' || stored === 'detailed' ? stored : 'detailed';
+    return stored === 'quick' || stored === 'detailed' ? stored : 'quick';
   });
   useEffect(() => {
     window.localStorage.setItem(MODE_STORAGE_KEY, mode);

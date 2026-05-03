@@ -342,21 +342,22 @@ a toast.
 
 ### 3. New Trade — Decision Helper
 
-A tab toggle at the top picks the input style:
+A tab toggle at the top picks the input style. **Quick** is the default
+on first load (the choice is then sticky in `localStorage`).
 
+- **Quick (advisor mode)** *(default)* — only three money fields plus
+  optional label, agent source, and notes. Use this when an advisor
+  recommended the trade and you only care about the risk numbers. The
+  form records the trade as a single FUT-style unit (`qty=1, lotSize=1,
+  expiry=today+30d`) so the entered amounts are totals; every check
+  (C1–C6) still runs against your live account.
 - **Detailed** — full form (symbol, instrument, strike, expiry, lot
   size, qty, entry/expected/max-loss per unit). Use this when you're
   driving the trade yourself.
-- **Quick (advisor mode)** — only three money fields plus optional
-  label, agent source, and notes. Use this when an advisor recommended
-  the trade and you only care about the risk numbers. The form records
-  the trade as a single FUT-style unit (`qty=1, lotSize=1, expiry=today
-  +30d`) so the entered amounts are totals; every check (C1–C6) still
-  runs against your live account.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ New Trade                          [ Detailed | Quick (advisor mode) ]   │
+│ New Trade                          [ Quick (advisor mode) | Detailed ]   │
 ├──────────────────────────────────┬──────────────────┬────────────────────┤
 │  QUICK FORM                      │  VERDICT         │  AI ADVISOR        │
 │  Capital deployed   [ ₹ 50000 ]  │  ┌────────────┐  │  ┌──────────────┐  │
@@ -372,7 +373,7 @@ A tab toggle at the top picks the input style:
 ```
 
 The toggle is sticky (saved in `localStorage` as
-`options-trader.newTrade.mode`).
+`options-trader.newTrade.mode`); first-time users land on Quick.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
