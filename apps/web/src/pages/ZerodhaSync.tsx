@@ -17,6 +17,7 @@ import {
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import { Link as RouterLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   api,
@@ -109,9 +110,22 @@ export function ZerodhaSync() {
       </Box>
 
       {!s?.configured && (
-        <Alert severity="warning">
-          Set <code>KITE_API_KEY</code> and <code>KITE_API_SECRET</code> in{' '}
-          <code>apps/server/.env</code> and restart the server.
+        <Alert
+          severity="warning"
+          action={
+            <Button
+              component={RouterLink}
+              to="/settings"
+              size="small"
+              color="inherit"
+            >
+              Open Settings
+            </Button>
+          }
+        >
+          Add your Kite Connect API key + secret in Settings → Zerodha credentials
+          to enable this screen. (Or set <code>KITE_API_KEY</code> /{' '}
+          <code>KITE_API_SECRET</code> in <code>apps/server/.env</code> and restart.)
         </Alert>
       )}
 
