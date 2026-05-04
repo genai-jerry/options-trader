@@ -67,9 +67,15 @@ export function ZerodhaSync() {
   const s = status.data;
 
   return (
-    <Stack spacing={3}>
-      <Box display="flex" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
-        <Box display="flex" alignItems="center" gap={2}>
+    <Stack spacing={{ xs: 2, sm: 3 }}>
+      <Box
+        display="flex"
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        flexDirection={{ xs: 'column', sm: 'row' }}
+        gap={1.5}
+      >
+        <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
           <Typography variant="h4">Zerodha Sync</Typography>
           {s?.connected && (
             <Chip
@@ -305,7 +311,7 @@ function PositionsGrid() {
     },
   ];
   return (
-    <Box sx={{ height: 420 }}>
+    <Box sx={{ height: { xs: 360, sm: 420 }, width: '100%', overflowX: 'auto' }}>
       <DataGrid
         rows={rows.map((r, i) => ({ id: `${r.tradingsymbol}-${i}`, ...r }))}
         columns={cols}
@@ -356,7 +362,7 @@ function HoldingsGrid() {
     },
   ];
   return (
-    <Box sx={{ height: 420 }}>
+    <Box sx={{ height: { xs: 360, sm: 420 }, width: '100%', overflowX: 'auto' }}>
       <DataGrid
         rows={rows.map((r, i) => ({ id: `${r.tradingsymbol}-${i}`, ...r }))}
         columns={cols}
@@ -387,7 +393,7 @@ function OrdersGrid() {
     },
   ];
   return (
-    <Box sx={{ height: 420 }}>
+    <Box sx={{ height: { xs: 360, sm: 420 }, width: '100%', overflowX: 'auto' }}>
       <DataGrid rows={rows.map((r) => ({ id: r.order_id, ...r }))} columns={cols} />
     </Box>
   );

@@ -3,6 +3,8 @@ import {
   Alert,
   Box,
   Button,
+  Card,
+  CardContent,
   Chip,
   CircularProgress,
   Dialog,
@@ -15,6 +17,8 @@ import {
   Stack,
   TextField,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { formatINR, rupeesToPaise, type Trade } from '@options-trader/shared';
@@ -25,6 +29,8 @@ type StatusFilter = '' | 'OPEN' | 'CLOSED';
 type InstrumentFilter = '' | 'CE' | 'PE' | 'FUT';
 
 export function Trades() {
+  const theme = useTheme();
+  const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
   const [status, setStatus] = useState<StatusFilter>('');
   const [instrument, setInstrument] = useState<InstrumentFilter>('');
   const [symbol, setSymbol] = useState('');
@@ -42,15 +48,100 @@ export function Trades() {
 
   const tradesQ = useTrades(filter);
 
+  return (
+    <Stack spacing={{ xs: 2, sm: 3 }}>
+      <Typography variant="h4">Trades</Typography>
+
+      {/* Filters — wrap on xs */}
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={1.5}
+        sx={{ '& > *': { flex: { sm: 1 } } }}
+      >
+        <TextField
+          label="Status"
+          select
+          size="small"
+          value={status}
+          onChange={(e) => setStatus(e.target.value as StatusFilter)}
+        >
+          <MenuItem value="">All</MenuItem>
+          <MenuItem value="OPEN">Open</MenuItem>
+          <MenuItem value="CLOSED">Closed</MenuItem>
+        </TextField>
+        <TextField
+          label="Instrument"
+          select
+          size="small"
+          value={instrument}
+          onChange={(e) => setInstrument(e.target.value as InstrumentFilter)}
+        >
+          <MenuItem value="">All</MenuItem>
+          <MenuItem value="CE">CE</MenuItem>
+          <MenuItem value="PE">PE</MenuItem>
+          <MenuItem value="FUT">FUT</MenuItem>
+        </TextField>
+        <TextField
+          label="Symbol"
+          size="small"
+          value={symbol}
+          onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+          placeholder="e.g. NIFTY"
+        />
+      </Stack>
+
+      {closeResult && (
+        <Alert severity="success" onClose={() => setCloseResult(null)}>
+          {closeResult}
+        </Alert>
+      )}
+
+      {tradesQ.isLoading ? (
+        <CircularProgress />
+      ) : tradesQ.isError ? (
+        <Alert severity="error">Failed to load trades.</Alert>
+      ) : (tradesQ.data ?? []).length === 0 ? (
+        <Card>
+          <CardContent>
+            <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ py: 4 }}>
+              No trades match these filters.
+            </Typography>
+          </CardContent>
+        </Card>
+      ) : isDesktop ? (
+        <DesktopTradesGrid trades={tradesQ.data ?? []} onClose={setClosing} />
+      ) : (
+        <MobileTradesList trades={tradesQ.data ?? []} onClose={setClosing} />
+      )}
+
+      <CloseTradeDialog
+        trade={closing}
+        onClose={() => setClosing(null)}
+        onSuccess={(message) => {
+          setClosing(null);
+          setCloseResult(message);
+        }}
+      />
+    </Stack>
+  );
+}
+
+// ─── desktop: DataGrid ────────────────────────────────────────────────
+
+function DesktopTradesGrid({
+  trades,
+  onClose,
+}: {
+  trades: Trade[];
+  onClose: (t: Trade) => void;
+}) {
   const columns: GridColDef<Trade>[] = [
     { field: 'symbol', headerName: 'Symbol', flex: 1, minWidth: 110 },
     {
       field: 'instrument',
       headerName: 'Inst',
       width: 80,
-      renderCell: ({ value }) => (
-        <Chip size="small" label={value} variant="outlined" />
-      ),
+      renderCell: ({ value }) => <Chip size="small" label={value} variant="outlined" />,
     },
     {
       field: 'strike',
@@ -111,7 +202,7 @@ export function Trades() {
       filterable: false,
       renderCell: ({ row }) =>
         row.status === 'OPEN' ? (
-          <Button size="small" variant="outlined" onClick={() => setClosing(row)}>
+          <Button size="small" variant="outlined" onClick={() => onClose(row)}>
             Close
           </Button>
         ) : null,
@@ -119,79 +210,113 @@ export function Trades() {
   ];
 
   return (
-    <Stack spacing={3}>
-      <Typography variant="h4">Trades</Typography>
-
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-        <TextField
-          label="Status"
-          select
-          value={status}
-          onChange={(e) => setStatus(e.target.value as StatusFilter)}
-          sx={{ minWidth: 160 }}
-        >
-          <MenuItem value="">All</MenuItem>
-          <MenuItem value="OPEN">Open</MenuItem>
-          <MenuItem value="CLOSED">Closed</MenuItem>
-        </TextField>
-        <TextField
-          label="Instrument"
-          select
-          value={instrument}
-          onChange={(e) => setInstrument(e.target.value as InstrumentFilter)}
-          sx={{ minWidth: 160 }}
-        >
-          <MenuItem value="">All</MenuItem>
-          <MenuItem value="CE">CE</MenuItem>
-          <MenuItem value="PE">PE</MenuItem>
-          <MenuItem value="FUT">FUT</MenuItem>
-        </TextField>
-        <TextField
-          label="Symbol"
-          value={symbol}
-          onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-          sx={{ minWidth: 200 }}
-          placeholder="e.g. NIFTY"
-        />
-      </Stack>
-
-      {closeResult && (
-        <Alert severity="success" onClose={() => setCloseResult(null)}>
-          {closeResult}
-        </Alert>
-      )}
-
-      {tradesQ.isLoading ? (
-        <CircularProgress />
-      ) : tradesQ.isError ? (
-        <Alert severity="error">Failed to load trades.</Alert>
-      ) : (
-        <Box sx={{ height: 560, width: '100%' }}>
-          <DataGrid
-            rows={tradesQ.data ?? []}
-            columns={columns}
-            getRowId={(row) => row.id}
-            initialState={{
-              pagination: { paginationModel: { pageSize: 25, page: 0 } },
-              sorting: { sortModel: [{ field: 'entryPrice', sort: 'desc' }] },
-            }}
-            pageSizeOptions={[10, 25, 50, 100]}
-            disableRowSelectionOnClick
-          />
-        </Box>
-      )}
-
-      <CloseTradeDialog
-        trade={closing}
-        onClose={() => setClosing(null)}
-        onSuccess={(message) => {
-          setClosing(null);
-          setCloseResult(message);
+    <Box sx={{ height: 560, width: '100%' }}>
+      <DataGrid
+        rows={trades}
+        columns={columns}
+        getRowId={(row) => row.id}
+        initialState={{
+          pagination: { paginationModel: { pageSize: 25, page: 0 } },
+          sorting: { sortModel: [{ field: 'entryPrice', sort: 'desc' }] },
+        }}
+        pageSizeOptions={[10, 25, 50, 100]}
+        disableRowSelectionOnClick
+        sx={{
+          border: 1,
+          borderColor: 'divider',
+          borderRadius: 2,
+          '& .MuiDataGrid-columnHeaders': { bgcolor: 'background.default' },
         }}
       />
+    </Box>
+  );
+}
+
+// ─── mobile: card stack ───────────────────────────────────────────────
+
+function MobileTradesList({
+  trades,
+  onClose,
+}: {
+  trades: Trade[];
+  onClose: (t: Trade) => void;
+}) {
+  return (
+    <Stack spacing={1.25}>
+      {trades.map((t) => (
+        <Card key={t.id}>
+          <CardContent
+            sx={{ py: 1.5, px: 1.75, '&:last-child': { pb: 1.5 } }}
+          >
+            <Box display="flex" justifyContent="space-between" alignItems="flex-start" gap={1}>
+              <Box sx={{ minWidth: 0 }}>
+                <Box display="flex" gap={0.75} alignItems="center" sx={{ mb: 0.25 }}>
+                  <Typography variant="body1" fontWeight={600} noWrap>
+                    {t.symbol}
+                  </Typography>
+                  <Chip size="small" label={t.instrument} variant="outlined" />
+                  <Chip
+                    size="small"
+                    label={t.status}
+                    color={t.status === 'OPEN' ? 'primary' : 'default'}
+                  />
+                </Box>
+                <Typography variant="caption" color="text.secondary">
+                  {t.qty} lots × {t.lotSize}
+                  {t.strike ? ` · strike ${formatINR(t.strike)}` : ''} · expiry {t.expiry}
+                </Typography>
+              </Box>
+              {t.status === 'OPEN' && (
+                <Button size="small" variant="outlined" onClick={() => onClose(t)}>
+                  Close
+                </Button>
+              )}
+            </Box>
+
+            <Box
+              display="grid"
+              gridTemplateColumns="1fr 1fr 1fr"
+              gap={1}
+              sx={{ mt: 1.25 }}
+            >
+              <Cell label="Entry" value={formatINR(t.entryPrice)} />
+              <Cell
+                label="Exit"
+                value={t.exitPrice !== undefined ? formatINR(t.exitPrice) : '—'}
+              />
+              <Cell
+                label="Net P&L"
+                value={t.netPnL !== undefined ? formatINR(t.netPnL) : '—'}
+                color={
+                  t.netPnL === undefined
+                    ? 'text.secondary'
+                    : t.netPnL >= 0
+                      ? 'success.main'
+                      : 'error.main'
+                }
+              />
+            </Box>
+          </CardContent>
+        </Card>
+      ))}
     </Stack>
   );
 }
+
+function Cell({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+        {label}
+      </Typography>
+      <Typography variant="body2" fontWeight={500} sx={{ color: color ?? 'text.primary' }}>
+        {value}
+      </Typography>
+    </Box>
+  );
+}
+
+// ─── close dialog ─────────────────────────────────────────────────────
 
 function CloseTradeDialog({
   trade,
@@ -285,4 +410,3 @@ function CloseTradeDialog({
     </Dialog>
   );
 }
-

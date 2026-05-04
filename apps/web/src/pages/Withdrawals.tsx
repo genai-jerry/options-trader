@@ -59,32 +59,49 @@ export function Withdrawals() {
     : 0;
 
   return (
-    <Stack spacing={3}>
-      <Box display="flex" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
+    <Stack spacing={{ xs: 2, sm: 3 }}>
+      <Box
+        display="flex"
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        flexDirection={{ xs: 'column', sm: 'row' }}
+        gap={1.5}
+      >
         <Typography variant="h4">Withdrawals</Typography>
         <Button
           variant="contained"
+          fullWidth={false}
           onClick={() => setOpenDialog(true)}
           disabled={!account || account.principalX === null || withdrawableCeiling <= 0}
+          sx={{ alignSelf: { xs: 'stretch', sm: 'auto' } }}
         >
           Withdraw cash
         </Button>
       </Box>
 
       {account?.principalX !== null && account !== undefined && (
-        <Card variant="outlined">
-          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-            <Stack
-              direction={{ xs: 'column', sm: 'row' }}
-              spacing={2}
-              divider={<Box sx={{ width: 1, bgcolor: 'divider', display: { xs: 'none', sm: 'block' } }} />}
-              justifyContent="space-around"
+        <Card>
+          <CardContent
+            sx={{
+              py: { xs: 1.5, sm: 2 },
+              '&:last-child': { pb: { xs: 1.5, sm: 2 } },
+            }}
+          >
+            <Box
+              display="grid"
+              gap={{ xs: 1.25, sm: 2 }}
+              sx={{
+                gridTemplateColumns: {
+                  xs: 'repeat(2, 1fr)',
+                  sm: 'repeat(4, 1fr)',
+                },
+              }}
             >
               <Stat label="Investable corpus" value={formatINR(account.investableCorpus)} />
               <Stat label="Lock floor (0.5X)" value={formatINR(lockFloor)} />
-              <Stat label="Withdrawable now" value={formatINR(withdrawableCeiling)} />
+              <Stat label="Withdrawable now" value={formatINR(withdrawableCeiling)} accent />
               <Stat label="Cash withdrawn" value={formatINR(account.cashWithdrawn)} />
-            </Stack>
+            </Box>
           </CardContent>
         </Card>
       )}
@@ -129,13 +146,32 @@ export function Withdrawals() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
   return (
     <Box>
-      <Typography variant="caption" color="text.secondary">
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ display: 'block', textTransform: 'uppercase', fontSize: 10, fontWeight: 600 }}
+      >
         {label}
       </Typography>
-      <Typography variant="body1" fontWeight={500}>
+      <Typography
+        variant="body1"
+        sx={{
+          fontWeight: 600,
+          color: accent ? 'primary.main' : 'text.primary',
+          fontSize: { xs: 14, sm: 16 },
+        }}
+      >
         {value}
       </Typography>
     </Box>
@@ -253,54 +289,64 @@ function WithdrawalCard({ withdrawal }: { withdrawal: PendingWithdrawal }) {
   return (
     <Card>
       <CardContent>
-        <Box display="flex" justifyContent="space-between" alignItems="center" gap={2}>
-          <Stack spacing={0.5}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <Typography variant="h5">{formatINR(withdrawal.amount)}</Typography>
+        <Box
+          display="flex"
+          flexDirection={{ xs: 'column', sm: 'row' }}
+          justifyContent="space-between"
+          alignItems={{ xs: 'stretch', sm: 'center' }}
+          gap={1.5}
+        >
+          <Stack spacing={0.5} sx={{ minWidth: 0 }}>
+            <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
+              <Typography variant="h5" sx={{ fontSize: { xs: 22, sm: 24 } }}>
+                {formatINR(withdrawal.amount)}
+              </Typography>
               <Chip
                 label={withdrawal.source}
                 size="small"
                 variant="outlined"
                 color={withdrawal.source === 'MANUAL' ? 'primary' : 'default'}
               />
+              <Chip
+                label={withdrawal.status}
+                color={statusColor[withdrawal.status]}
+                size="small"
+              />
             </Box>
             <Typography variant="caption" color="text.secondary">
               {withdrawal.fromTradeId
                 ? <>From trade <code>{withdrawal.fromTradeId.slice(0, 8)}…</code> · </>
                 : <>Manual withdrawal · </>}
-              created {created}
+              {created}
               {decided && ` · decided ${decided}`}
             </Typography>
           </Stack>
 
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Chip
-              label={withdrawal.status}
-              color={statusColor[withdrawal.status]}
-              size="small"
-            />
-            {withdrawal.status === 'PENDING' && (
-              <>
-                <Button
-                  size="small"
-                  variant="contained"
-                  disabled={confirm.isPending || cancel.isPending}
-                  onClick={() => confirm.mutate(withdrawal.id)}
-                >
-                  Confirm
-                </Button>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  color="inherit"
-                  disabled={confirm.isPending || cancel.isPending}
-                  onClick={() => cancel.mutate(withdrawal.id)}
-                >
-                  Cancel
-                </Button>
-              </>
-            )}
-          </Stack>
+          {withdrawal.status === 'PENDING' && (
+            <Stack
+              direction="row"
+              spacing={1}
+              sx={{ alignSelf: { xs: 'flex-end', sm: 'auto' } }}
+            >
+              <Button
+                size="small"
+                variant="contained"
+                disabled={confirm.isPending || cancel.isPending}
+                onClick={() => confirm.mutate(withdrawal.id)}
+              >
+                Confirm
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                color="inherit"
+                disabled={confirm.isPending || cancel.isPending}
+                onClick={() => cancel.mutate(withdrawal.id)}
+              >
+                Cancel
+              </Button>
+            </Stack>
+          )}
         </Box>
 
         {errorMessage && (

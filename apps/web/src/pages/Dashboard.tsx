@@ -8,7 +8,6 @@ import {
   Chip,
   CircularProgress,
   LinearProgress,
-  Paper,
   Stack,
   Typography,
 } from '@mui/material';
@@ -61,8 +60,8 @@ export function Dashboard() {
     account.principalX !== null ? account.principalX * 2 : null;
 
   return (
-    <Stack spacing={3}>
-      <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
+    <Stack spacing={{ xs: 2, sm: 3 }}>
+      <Box display="flex" alignItems="center" gap={1.5} flexWrap="wrap">
         <Typography variant="h4">Dashboard</Typography>
         <Chip label={account.phase} color={PHASE_COLOR[account.phase]} />
         {account.lockOverrideAt && (
@@ -98,13 +97,19 @@ export function Dashboard() {
         </Alert>
       )}
 
-      {/* Tiles */}
+      {/* Tiles — 2-up on mobile, 3-up on tablet, auto-fit on desktop */}
       <Box
         display="grid"
-        gridTemplateColumns="repeat(auto-fit, minmax(220px, 1fr))"
-        gap={2}
+        gap={{ xs: 1.5, sm: 2 }}
+        sx={{
+          gridTemplateColumns: {
+            xs: 'repeat(2, 1fr)',
+            sm: 'repeat(3, 1fr)',
+            md: 'repeat(auto-fit, minmax(200px, 1fr))',
+          },
+        }}
       >
-        <Tile label="Investable corpus" value={formatINR(account.investableCorpus)} />
+        <Tile label="Investable corpus" value={formatINR(account.investableCorpus)} accent="primary" />
         <Tile label="Set aside" value={formatINR(account.setAside)} />
         <Tile label="Cash withdrawn" value={formatINR(account.cashWithdrawn)} />
         <Tile
@@ -112,49 +117,39 @@ export function Dashboard() {
           value={formatINR(pendingTotal)}
           sub={pendingQ.data?.length ? `${pendingQ.data.length} queued` : undefined}
         />
-        <Tile label="Realized P&L" value={formatINR(account.realizedPnL)} />
-        <Tile label="Fees paid" value={formatINR(account.feesPaid)} />
+        <Tile
+          label="Realized P&L"
+          value={formatINR(account.realizedPnL)}
+          accent={account.realizedPnL >= 0 ? 'success' : 'error'}
+        />
+        <Tile label="Profit shared" value={formatINR(account.feesPaid)} />
         <Tile label="Open trades" value={String(openQ.data?.length ?? 0)} />
         {lockFloor !== null && lockDistance !== null && (
           <Tile
             label="Distance to lock floor"
             value={formatINR(lockDistance)}
             sub={`Floor: ${formatINR(lockFloor)}`}
-            tone={
+            accent={
               lockDistance <= 0
                 ? 'error'
                 : lockDistance < lockFloor / 2
                   ? 'warning'
-                  : 'default'
+                  : undefined
             }
           />
         )}
       </Box>
 
-      {/* Principal recovered (cumulative cashWithdrawn vs principalX) */}
+      {/* Principal recovered */}
       {account.principalX !== null && account.principalX > 0 && (
         <Card>
           <CardContent>
-            <Stack
-              direction="row"
-              justifyContent="space-between"
-              alignItems="center"
-              sx={{ mb: 1 }}
-            >
-              <Typography variant="subtitle2" color="text.secondary">
-                Principal recovered (cash withdrawn vs principal X)
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {formatINR(account.cashWithdrawn)} / {formatINR(account.principalX)}
-              </Typography>
-            </Stack>
-            <LinearProgress
-              variant="determinate"
-              value={Math.max(
-                0,
-                Math.min(100, (account.cashWithdrawn / account.principalX) * 100),
-              )}
-              sx={{ height: 10, borderRadius: 1 }}
+            <ProgressRow
+              title="Principal recovered"
+              subtitle="Cash withdrawn vs principal X"
+              left={formatINR(account.cashWithdrawn)}
+              right={formatINR(account.principalX)}
+              percent={(account.cashWithdrawn / account.principalX) * 100}
               color={account.cashWithdrawn >= account.principalX ? 'success' : 'primary'}
             />
             {account.cashWithdrawn >= account.principalX && (
@@ -166,30 +161,16 @@ export function Dashboard() {
         </Card>
       )}
 
-      {/* Bootstrap gauge */}
+      {/* Bootstrap progress */}
       {account.phase === 'BOOTSTRAP' && bootstrapTarget !== null && (
         <Card>
           <CardContent>
-            <Stack
-              direction="row"
-              justifyContent="space-between"
-              alignItems="center"
-              sx={{ mb: 1 }}
-            >
-              <Typography variant="subtitle2" color="text.secondary">
-                Bootstrap progress (cumulative net P&L vs 2X)
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {formatINR(account.realizedPnL)} / {formatINR(bootstrapTarget)}
-              </Typography>
-            </Stack>
-            <LinearProgress
-              variant="determinate"
-              value={Math.max(
-                0,
-                Math.min(100, (account.realizedPnL / bootstrapTarget) * 100),
-              )}
-              sx={{ height: 10, borderRadius: 1 }}
+            <ProgressRow
+              title="Bootstrap progress"
+              subtitle="Cumulative net P&L vs 2X target"
+              left={formatINR(account.realizedPnL)}
+              right={formatINR(bootstrapTarget)}
+              percent={(account.realizedPnL / bootstrapTarget) * 100}
             />
           </CardContent>
         </Card>
@@ -200,7 +181,7 @@ export function Dashboard() {
         <LockFloorGauge account={account} />
       )}
 
-      <Box display="grid" gridTemplateColumns={{ xs: '1fr', md: '2fr 1fr' }} gap={3}>
+      <Box display="grid" gridTemplateColumns={{ xs: '1fr', md: '2fr 1fr' }} gap={{ xs: 2, md: 3 }}>
         <EquityCurveCard closed={closedQ.data ?? []} />
         <RecentDecisionsCard decisions={decisionsQ.data ?? []} />
       </Box>
@@ -210,53 +191,133 @@ export function Dashboard() {
   );
 }
 
+// ─── tile ─────────────────────────────────────────────────────────────
+
 function Tile(props: {
   label: string;
   value: string;
   sub?: string;
-  tone?: 'default' | 'warning' | 'error';
+  accent?: 'primary' | 'success' | 'warning' | 'error';
 }) {
-  const borderColor =
-    props.tone === 'error'
-      ? 'error.main'
-      : props.tone === 'warning'
-        ? 'warning.main'
-        : 'divider';
+  const accentColor = props.accent ? `${props.accent}.main` : 'transparent';
   return (
-    <Paper sx={{ p: 2, borderLeft: 4, borderColor }}>
-      <Typography variant="overline" color="text.secondary">
-        {props.label}
-      </Typography>
-      <Typography variant="h5">{props.value}</Typography>
-      {props.sub && (
-        <Typography variant="caption" color="text.secondary">
-          {props.sub}
-        </Typography>
+    <Card sx={{ position: 'relative', overflow: 'hidden' }}>
+      {props.accent && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width: 3,
+            bgcolor: accentColor,
+          }}
+        />
       )}
-    </Paper>
+      <CardContent
+        sx={{
+          py: { xs: 1.5, sm: 2 },
+          px: { xs: 1.5, sm: 2 },
+          '&:last-child': { pb: { xs: 1.5, sm: 2 } },
+        }}
+      >
+        <Typography
+          variant="overline"
+          color="text.secondary"
+          sx={{ fontSize: { xs: 10, sm: 11 }, lineHeight: 1.3 }}
+        >
+          {props.label}
+        </Typography>
+        <Typography
+          variant="h6"
+          sx={{
+            fontSize: { xs: 18, sm: 22 },
+            fontWeight: 600,
+            mt: 0.25,
+            wordBreak: 'break-word',
+          }}
+        >
+          {props.value}
+        </Typography>
+        {props.sub && (
+          <Typography variant="caption" color="text.secondary">
+            {props.sub}
+          </Typography>
+        )}
+      </CardContent>
+    </Card>
   );
 }
+
+// ─── shared progress row ──────────────────────────────────────────────
+
+function ProgressRow(props: {
+  title: string;
+  subtitle?: string;
+  left: string;
+  right: string;
+  percent: number;
+  color?: 'primary' | 'success' | 'warning' | 'error';
+}) {
+  const pct = Math.max(0, Math.min(100, props.percent));
+  return (
+    <>
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'baseline' }}
+        sx={{ mb: 1, gap: 0.5 }}
+      >
+        <Box>
+          <Typography variant="subtitle2">{props.title}</Typography>
+          {props.subtitle && (
+            <Typography variant="caption" color="text.secondary">
+              {props.subtitle}
+            </Typography>
+          )}
+        </Box>
+        <Typography variant="caption" color="text.secondary">
+          {props.left} / {props.right}
+        </Typography>
+      </Stack>
+      <LinearProgress
+        variant="determinate"
+        value={pct}
+        sx={{ height: 8, borderRadius: 8 }}
+        color={props.color ?? 'primary'}
+      />
+    </>
+  );
+}
+
+// ─── lock-floor gauge ─────────────────────────────────────────────────
 
 function LockFloorGauge({ account }: { account: Account }) {
   if (account.principalX === null) return null;
   const floor = Math.floor(account.principalX / 2);
-  // Visual range: 0 .. 2X. Floor sits at 25% of the bar.
   const max = account.principalX * 2;
   const corpusPct = Math.max(0, Math.min(100, (account.investableCorpus / max) * 100));
   const floorPct = (floor / max) * 100;
 
+  const tone =
+    account.investableCorpus <= floor
+      ? 'error.main'
+      : account.investableCorpus < floor * 1.5
+        ? 'warning.main'
+        : 'success.main';
+
   return (
     <Card>
       <CardContent>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
           Lock-floor gauge
         </Typography>
-        <Box sx={{ position: 'relative', height: 28 }}>
+        <Box sx={{ position: 'relative', height: 24 }}>
           <Box
             sx={{
               position: 'absolute',
               inset: 0,
-              borderRadius: 1,
+              borderRadius: 12,
               bgcolor: 'grey.200',
             }}
           />
@@ -267,14 +328,9 @@ function LockFloorGauge({ account }: { account: Account }) {
               bottom: 0,
               left: 0,
               width: `${corpusPct}%`,
-              bgcolor:
-                account.investableCorpus <= floor
-                  ? 'error.main'
-                  : account.investableCorpus < floor * 1.5
-                    ? 'warning.main'
-                    : 'success.main',
-              borderRadius: 1,
-              transition: 'width 200ms',
+              bgcolor: tone,
+              borderRadius: 12,
+              transition: 'width 240ms',
             }}
           />
           <Box
@@ -305,6 +361,8 @@ function LockFloorGauge({ account }: { account: Account }) {
   );
 }
 
+// ─── equity curve ─────────────────────────────────────────────────────
+
 function EquityCurveCard({ closed }: { closed: Trade[] }) {
   const series = useMemo(() => {
     const sorted = [...closed]
@@ -316,7 +374,7 @@ function EquityCurveCard({ closed }: { closed: Trade[] }) {
     sorted.forEach((t, i) => {
       cum += t.netPnL ?? 0;
       xs.push(i + 1);
-      ys.push(cum / 100); // rupees for the chart
+      ys.push(cum / 100);
     });
     return { xs, ys };
   }, [closed]);
@@ -324,15 +382,18 @@ function EquityCurveCard({ closed }: { closed: Trade[] }) {
   return (
     <Card>
       <CardContent>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-          Equity curve (cumulative net P&L, ₹)
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Equity curve
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+          Cumulative net P&L (₹) by closed trade
         </Typography>
         {series.xs.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
             No closed trades yet.
           </Typography>
         ) : (
-          <Box sx={{ width: '100%', height: 260 }}>
+          <Box sx={{ width: '100%', height: { xs: 220, md: 260 } }}>
             <LineChart
               xAxis={[{ data: series.xs, label: 'Closed trade #' }]}
               series={[{ data: series.ys, label: 'Net P&L (₹)', area: true, showMark: false }]}
@@ -346,11 +407,13 @@ function EquityCurveCard({ closed }: { closed: Trade[] }) {
   );
 }
 
+// ─── recent decisions ─────────────────────────────────────────────────
+
 function RecentDecisionsCard({ decisions }: { decisions: DecisionRecord[] }) {
   return (
     <Card>
       <CardContent>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
           Recent decisions
         </Typography>
         {decisions.length === 0 ? (
@@ -358,7 +421,7 @@ function RecentDecisionsCard({ decisions }: { decisions: DecisionRecord[] }) {
             None yet.
           </Typography>
         ) : (
-          <Stack spacing={1.5}>
+          <Stack spacing={1.25}>
             {decisions.slice(0, 8).map((d) => (
               <Box
                 key={d.id}
@@ -367,13 +430,22 @@ function RecentDecisionsCard({ decisions }: { decisions: DecisionRecord[] }) {
                 alignItems="center"
                 gap={1}
               >
-                <Stack spacing={0}>
-                  <Typography variant="body2" fontWeight={500}>
+                <Stack spacing={0} sx={{ minWidth: 0 }}>
+                  <Typography
+                    variant="body2"
+                    fontWeight={500}
+                    noWrap
+                    sx={{ minWidth: 0 }}
+                  >
                     {d.input.symbol} {d.input.instrument}
                     {d.input.strike ? ` @ ${formatINR(d.input.strike)}` : ''}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {new Date(d.decidedAt).toLocaleString()}
+                  <Typography variant="caption" color="text.secondary" noWrap>
+                    {new Date(d.decidedAt).toLocaleDateString()}{' '}
+                    {new Date(d.decidedAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
                     {d.acceptedByUser ? ' · accepted' : ''}
                   </Typography>
                 </Stack>
@@ -391,11 +463,13 @@ function RecentDecisionsCard({ decisions }: { decisions: DecisionRecord[] }) {
   );
 }
 
+// ─── open positions (responsive: table on md+, cards on xs) ──────────
+
 function OpenPositionsCard({ trades }: { trades: Trade[] }) {
   return (
     <Card>
       <CardContent>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
           Open positions
         </Typography>
         {trades.length === 0 ? (
@@ -403,33 +477,75 @@ function OpenPositionsCard({ trades }: { trades: Trade[] }) {
             No open positions.
           </Typography>
         ) : (
-          <Box
-            display="grid"
-            gridTemplateColumns="2fr 1fr 1fr 1fr 1fr 1fr"
-            gap={1}
-            sx={{ '& > .h': { fontSize: 12, color: 'text.secondary', textTransform: 'uppercase' } }}
-          >
-            <Typography className="h">Symbol</Typography>
-            <Typography className="h">Inst</Typography>
-            <Typography className="h">Strike</Typography>
-            <Typography className="h">Lots</Typography>
-            <Typography className="h">Entry</Typography>
-            <Typography className="h">Capital</Typography>
-            {trades.map((t) => (
-              <Box key={t.id} display="contents">
-                <Typography variant="body2">{t.symbol}</Typography>
-                <Typography variant="body2">{t.instrument}</Typography>
-                <Typography variant="body2">
-                  {t.strike ? formatINR(t.strike) : '—'}
-                </Typography>
-                <Typography variant="body2">{t.qty}</Typography>
-                <Typography variant="body2">{formatINR(t.entryPrice)}</Typography>
-                <Typography variant="body2">
-                  {formatINR(t.entryPrice * t.qty * t.lotSize)}
-                </Typography>
-              </Box>
-            ))}
-          </Box>
+          <>
+            {/* Compact table on md+ */}
+            <Box
+              display={{ xs: 'none', md: 'grid' }}
+              gridTemplateColumns="2fr 1fr 1fr 1fr 1fr 1fr"
+              gap={1}
+              sx={{
+                '& > .h': {
+                  fontSize: 12,
+                  color: 'text.secondary',
+                  textTransform: 'uppercase',
+                  fontWeight: 600,
+                },
+              }}
+            >
+              <Typography className="h">Symbol</Typography>
+              <Typography className="h">Inst</Typography>
+              <Typography className="h">Strike</Typography>
+              <Typography className="h">Lots</Typography>
+              <Typography className="h">Entry</Typography>
+              <Typography className="h">Capital</Typography>
+              {trades.map((t) => (
+                <Box key={t.id} display="contents">
+                  <Typography variant="body2">{t.symbol}</Typography>
+                  <Typography variant="body2">{t.instrument}</Typography>
+                  <Typography variant="body2">
+                    {t.strike ? formatINR(t.strike) : '—'}
+                  </Typography>
+                  <Typography variant="body2">{t.qty}</Typography>
+                  <Typography variant="body2">{formatINR(t.entryPrice)}</Typography>
+                  <Typography variant="body2">
+                    {formatINR(t.entryPrice * t.qty * t.lotSize)}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+
+            {/* Card stack on xs/sm */}
+            <Stack spacing={1} sx={{ display: { xs: 'flex', md: 'none' } }}>
+              {trades.map((t) => (
+                <Box
+                  key={t.id}
+                  sx={{
+                    border: 1,
+                    borderColor: 'divider',
+                    borderRadius: 1.5,
+                    p: 1.25,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 0.25,
+                  }}
+                >
+                  <Box display="flex" justifyContent="space-between" alignItems="center" gap={1}>
+                    <Typography variant="body2" fontWeight={600}>
+                      {t.symbol}
+                    </Typography>
+                    <Chip size="small" label={t.instrument} variant="outlined" />
+                  </Box>
+                  <Typography variant="caption" color="text.secondary">
+                    {t.qty} lots · entry {formatINR(t.entryPrice)}
+                    {t.strike ? ` · strike ${formatINR(t.strike)}` : ''}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Capital: {formatINR(t.entryPrice * t.qty * t.lotSize)}
+                  </Typography>
+                </Box>
+              ))}
+            </Stack>
+          </>
         )}
       </CardContent>
     </Card>

@@ -105,16 +105,27 @@ export function NewTrade() {
   const submitBlocked = decision?.verdict === 'BLOCK';
 
   return (
-    <Stack spacing={3}>
-      <Box display="flex" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
+    <Stack spacing={{ xs: 2, sm: 3 }}>
+      <Box
+        display="flex"
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        flexDirection={{ xs: 'column', sm: 'row' }}
+        gap={2}
+      >
         <Typography variant="h4">New Trade</Typography>
-        <Tabs value={mode} onChange={(_, v) => setMode(v as Mode)}>
+        <Tabs
+          value={mode}
+          onChange={(_, v) => setMode(v as Mode)}
+          variant="standard"
+          sx={{ minHeight: 36, '& .MuiTab-root': { minHeight: 36, py: 0.5, fontSize: 13 } }}
+        >
+          <Tab value="quick" label="Quick" />
           <Tab value="detailed" label="Detailed" />
-          <Tab value="quick" label="Quick (advisor mode)" />
         </Tabs>
       </Box>
 
-      <Box display="grid" gridTemplateColumns={{ xs: '1fr', md: '2fr 1fr' }} gap={3}>
+      <Box display="grid" gridTemplateColumns={{ xs: '1fr', md: '2fr 1fr' }} gap={{ xs: 2, md: 3 }}>
         {mode === 'detailed' ? (
           <DetailedForm
             onChange={setInput}

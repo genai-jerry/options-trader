@@ -46,7 +46,7 @@ export function Settings() {
   const hasTrades = (tradesQ.data?.length ?? 0) > 0;
 
   return (
-    <Stack spacing={3} maxWidth={720}>
+    <Stack spacing={{ xs: 2, sm: 3 }} sx={{ maxWidth: 760 }}>
       <Typography variant="h4">Settings</Typography>
 
       <PrincipalSection account={account} hasTrades={hasTrades} />

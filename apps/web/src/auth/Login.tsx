@@ -29,14 +29,31 @@ export function Login({ error }: { error?: string }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        bgcolor: 'grey.50',
+        bgcolor: 'background.default',
         p: 2,
       }}
     >
       <Card sx={{ maxWidth: 420, width: '100%' }}>
-        <CardContent>
-          <Stack spacing={3} sx={{ p: 1 }}>
+        <CardContent sx={{ p: { xs: 2.5, sm: 3 } }}>
+          <Stack spacing={3}>
             <Box>
+              <Box
+                sx={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 2,
+                  bgcolor: 'primary.main',
+                  color: 'primary.contrastText',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 700,
+                  fontSize: 18,
+                  mb: 1.5,
+                }}
+              >
+                OT
+              </Box>
               <Typography variant="h5">Options Trader</Typography>
               <Typography variant="body2" color="text.secondary">
                 Sign in to access your phase-based trading book.

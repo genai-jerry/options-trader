@@ -102,10 +102,19 @@ export function AIAdvisor() {
   };
 
   return (
-    <Stack spacing={3} sx={{ height: 'calc(100vh - 160px)' }}>
-      <Box display="flex" justifyContent="space-between" alignItems="center" gap={2}>
+    <Stack
+      spacing={{ xs: 2, sm: 3 }}
+      sx={{ height: { xs: 'calc(100vh - 130px)', sm: 'calc(100vh - 160px)' } }}
+    >
+      <Box
+        display="flex"
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        flexDirection={{ xs: 'column', sm: 'row' }}
+        gap={1.5}
+      >
         <Typography variant="h4">AI Advisor</Typography>
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
           <Chip
             label={ready ? `${status.data?.provider}/${status.data?.model}` : 'Not configured'}
             color={ready ? 'success' : 'default'}
