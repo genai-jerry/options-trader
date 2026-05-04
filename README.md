@@ -932,14 +932,23 @@ fly volumes create options_trader_data --size 1 --region bom
 (`bom` = Mumbai. Pick a region close to you and to NSE if you'll use the
 Zerodha integration. List with `fly platform regions`.)
 
-### Step 3 — point Vercel's rewrite at your Fly app
+### Step 3 — set the backend origin in Vercel
 
-Edit `vercel.json`:
+`vercel.json` ships with a placeholder destination (`https://YOUR-FLY-APP.fly.dev`)
+that gets rewritten at build time from the `BACKEND_ORIGIN` env var. You
+set the env var once in the Vercel dashboard — never edit `vercel.json`
+to commit the URL.
 
-```diff
--      "destination": "https://YOUR-FLY-APP.fly.dev/api/:path*"
-+      "destination": "https://<your-unique-name>.fly.dev/api/:path*"
-```
+In Vercel, after importing the project (Step 4 below): **Project
+Settings → Environment Variables** → add
+
+| Name             | Value                                                    | Environments |
+| ---------------- | -------------------------------------------------------- | ------------ |
+| `BACKEND_ORIGIN` | `https://<your-unique-name>.fly.dev`                     | Production, Preview |
+
+Save. The next deploy will pick it up; `scripts/configure-vercel.mjs`
+runs as part of the build, substitutes the placeholder, and the rewrite
+goes live.
 
 ### Step 4 — deploy the frontend to Vercel
 
@@ -1020,9 +1029,11 @@ face; Fly stays on `*.fly.dev`.
 
 ### Troubleshooting
 
+- **Vercel build fails with `BACKEND_ORIGIN is not set`.** Add the env
+  var under Project Settings → Environment Variables and redeploy.
 - **Cookies not sticking after Google login.** Check that `APP_ORIGIN`
-  exactly matches the Vercel URL (https, no trailing slash) and the OAuth
-  redirect URI matches what's registered in Google.
+  on Fly exactly matches the Vercel URL (https, no trailing slash) and
+  the OAuth redirect URI matches what's registered in Google.
 - **502 from Vercel on `/api/*`.** Fly machine is starting up
   (`auto_start_machines`). Refresh after ~5–10 seconds.
 - **`/api/health` fine but `/api/auth/me` 401.** Cookie didn't make it
