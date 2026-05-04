@@ -1,14 +1,14 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
 
-  "buildCommand": "node scripts/configure-vercel.mjs && npm install && npm run build:web",
+  "buildCommand": "npm install && npm run build:web",
   "outputDirectory": "apps/web/dist",
   "framework": null,
 
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://YOUR-FLY-APP.fly.dev/api/:path*"
+      "destination": "https://options-trader-marbled-feather-1669.fly.dev/api/:path*"
     },
     {
       "source": "/((?!api/|assets/).*)",

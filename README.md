@@ -932,23 +932,22 @@ fly volumes create options_trader_data --size 1 --region bom
 (`bom` = Mumbai. Pick a region close to you and to NSE if you'll use the
 Zerodha integration. List with `fly platform regions`.)
 
-### Step 3 — set the backend origin in Vercel
+### Step 3 — point `vercel.json` at your Fly app
 
-`vercel.json` ships with a placeholder destination (`https://YOUR-FLY-APP.fly.dev`)
-that gets rewritten at build time from the `BACKEND_ORIGIN` env var. You
-set the env var once in the Vercel dashboard — never edit `vercel.json`
-to commit the URL.
+`vercel.json` has the rewrite that forwards `/api/*` to the Fly backend.
+Open it and replace the host in the `destination` with your Fly app's
+URL:
 
-In Vercel, after importing the project (Step 4 below): **Project
-Settings → Environment Variables** → add
+```json
+{
+  "source": "/api/:path*",
+  "destination": "https://<your-unique-name>.fly.dev/api/:path*"
+}
+```
 
-| Name             | Value                                                    | Environments |
-| ---------------- | -------------------------------------------------------- | ------------ |
-| `BACKEND_ORIGIN` | `https://<your-unique-name>.fly.dev`                     | Production, Preview |
-
-Save. The next deploy will pick it up; `scripts/configure-vercel.mjs`
-runs as part of the build, substitutes the placeholder, and the rewrite
-goes live.
+Commit the change. Vercel rewrites are read from this file at deploy
+time, so editing it in source is the supported way to set the backend
+host.
 
 ### Step 4 — deploy the frontend to Vercel
 
@@ -1029,8 +1028,10 @@ face; Fly stays on `*.fly.dev`.
 
 ### Troubleshooting
 
-- **Vercel build fails with `BACKEND_ORIGIN is not set`.** Add the env
-  var under Project Settings → Environment Variables and redeploy.
+- **`/api/*` returns `DNS_HOSTNAME_NOT_FOUND` from Vercel.** The
+  rewrite destination in `vercel.json` still has a placeholder or
+  points to a Fly app that doesn't exist. Update it (Step 3) and
+  redeploy.
 - **Cookies not sticking after Google login.** Check that `APP_ORIGIN`
   on Fly exactly matches the Vercel URL (https, no trailing slash) and
   the OAuth redirect URI matches what's registered in Google.
