@@ -5,6 +5,7 @@ import { CssBaseline, ThemeProvider, createTheme } from '@mui/material';
 import { RouterProvider } from 'react-router-dom';
 import { router } from './router';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { AuthProvider } from './auth/AuthProvider';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,7 +26,9 @@ createRoot(rootEl).render(
       <CssBaseline />
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <RouterProvider router={router} />
+          <AuthProvider>
+            <RouterProvider router={router} />
+          </AuthProvider>
         </QueryClientProvider>
       </ErrorBoundary>
     </ThemeProvider>

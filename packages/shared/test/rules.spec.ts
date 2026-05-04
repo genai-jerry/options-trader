@@ -98,20 +98,24 @@ describe('R1: BOOTSTRAP → SELF_SUSTAINING when realizedPnL ≥ 2X', () => {
     const result = applyRulesOnClose(debited, opening, OPTS);
 
     expect(result.account.phase).toBe('BOOTSTRAP');
-    expect(result.account.investableCorpus).toBe(rupeesToPaise(120_000));
-    expect(result.account.realizedPnL).toBe(rupeesToPaise(20_000));
+    // Profit share applies on every profitable close: fee = 5% × 20,000 = 1,000.
+    // Corpus = 100,000 − 50,000 + 70,000 − 1,000 = 119,000.
+    expect(result.account.investableCorpus).toBe(rupeesToPaise(119_000));
+    expect(result.account.realizedPnL).toBe(rupeesToPaise(19_000));
+    expect(result.account.feesPaid).toBe(rupeesToPaise(1_000));
     expect(result.account.setAside).toBe(0);
     expect(result.queuedWithdrawal).toBeUndefined();
     expect(result.firedRules).toEqual([]);
     expect(result.trade.status).toBe('CLOSED');
-    expect(result.trade.fees).toBe(0);
+    expect(result.trade.fees).toBe(rupeesToPaise(1_000));
     expect(result.trade.grossPnL).toBe(rupeesToPaise(20_000));
-    expect(result.trade.netPnL).toBe(rupeesToPaise(20_000));
+    expect(result.trade.netPnL).toBe(rupeesToPaise(19_000));
   });
 
   it('a close that crosses 2X fires R1 — principalX moves to setAside, phase → SELF_SUSTAINING', () => {
-    // Setup: realizedPnL is already at 2X−10k after prior wins. Corpus reflects
-    // those wins. One more profitable close pushes cumulative pnl ≥ 2X.
+    // Setup: net realizedPnL is already at 2X−10k after prior wins. The new
+    // close: gross 20k, fee 1k, net 19k. Cumulative net = 199k + ... wait.
+    // We use prior 190k as already-net so the new net just needs to add ≥ 10k.
     const account = bootstrapAccount({
       realizedPnL: rupeesToPaise(190_000),
       investableCorpus: rupeesToPaise(290_000),
@@ -122,7 +126,7 @@ describe('R1: BOOTSTRAP → SELF_SUSTAINING when realizedPnL ≥ 2X', () => {
     };
     const opening: Trade = trade({
       entryPrice: rupeesToPaise(80_000),
-      exitPrice: rupeesToPaise(90_000),
+      exitPrice: rupeesToPaise(100_000), // gross = 20k, fee 1k, net 19k
     });
 
     const result = applyRulesOnClose(debited, opening, OPTS);
@@ -130,13 +134,14 @@ describe('R1: BOOTSTRAP → SELF_SUSTAINING when realizedPnL ≥ 2X', () => {
     expect(result.firedRules).toContain('R1');
     expect(result.account.phase).toBe('SELF_SUSTAINING');
     expect(result.account.setAside).toBe(X_PAISE);
-    // Pre-R1: corpus = 210,000 (debited) + 90,000 = 300,000.
-    // R1 moves principal aside: 300,000 − 100,000 = 200,000.
-    expect(result.account.investableCorpus).toBe(rupeesToPaise(200_000));
-    expect(result.account.realizedPnL).toBe(rupeesToPaise(200_000));
+    // Pre-R1: corpus = 210,000 (debited) + 100,000 − 1,000 fee = 309,000.
+    // R1 moves principal aside: 309,000 − 100,000 = 209,000.
+    expect(result.account.investableCorpus).toBe(rupeesToPaise(209_000));
+    // realizedPnL accumulates net: 190,000 + 19,000 = 209,000.
+    expect(result.account.realizedPnL).toBe(rupeesToPaise(209_000));
     // The same close does NOT fire R2 — phase at close-start was BOOTSTRAP.
     expect(result.queuedWithdrawal).toBeUndefined();
-    expect(result.account.feesPaid).toBe(0);
+    expect(result.account.feesPaid).toBe(rupeesToPaise(1_000));
   });
 
   it('R1 does not fire while realizedPnL is still below 2X even on a big win', () => {
@@ -157,7 +162,8 @@ describe('R1: BOOTSTRAP → SELF_SUSTAINING when realizedPnL ≥ 2X', () => {
 
     expect(result.firedRules).toEqual([]);
     expect(result.account.phase).toBe('BOOTSTRAP');
-    expect(result.account.realizedPnL).toBe(rupeesToPaise(100_000));
+    // gross = 100k, fee 5k, net = 95k. Below 2X (200k) so R1 stays put.
+    expect(result.account.realizedPnL).toBe(rupeesToPaise(95_000));
   });
 });
 
@@ -503,8 +509,10 @@ describe('end-to-end: bootstrap → 2X → self-sustaining → split + confirm',
   it('matches the spec §3 sequence', () => {
     let acc = bootstrapAccount();
 
-    // Sequence of bootstrap profits totalling 200,000 net.
-    // Use one ₹200,000 winner for simplicity.
+    // Sequence of bootstrap profits totalling >= 200,000 NET. With a 5%
+    // profit share on every profitable close, gross needs to be at least
+    // 210,527 to net 200k. Use one big winner with gross = 220,000:
+    //   fee = 11,000, net = 209,000 ≥ 2X target.
     acc = {
       ...acc,
       investableCorpus: acc.investableCorpus - rupeesToPaise(50_000),
@@ -512,7 +520,7 @@ describe('end-to-end: bootstrap → 2X → self-sustaining → split + confirm',
     const t1 = trade({
       id: 't-1',
       entryPrice: rupeesToPaise(50_000),
-      exitPrice: rupeesToPaise(250_000),
+      exitPrice: rupeesToPaise(270_000), // gross 220k → net 209k
     });
     const r1 = applyRulesOnClose(acc, t1, { withdrawalId: 'w-1', now: NOW });
     expect(r1.firedRules).toEqual(['R1']);

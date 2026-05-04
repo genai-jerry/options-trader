@@ -1,9 +1,14 @@
 /**
  * Typed CRUD helpers around the SQLite database.
  *
+ * Multi-tenancy: every per-user table carries a `user_id` column. Routes
+ * obtain a `UserRepo` (via `createUserRepo(db, userId)`) so every query
+ * is automatically scoped — there is no way to read another user's data.
+ *
+ * `createRepo(db)` is the system-level repo: it manages users + sessions
+ * and exposes introspection. It does NOT have any per-user data methods.
+ *
  * Money invariant reminder: every monetary column is INTEGER paise.
- * Helpers here translate snake_case columns to the camelCase shapes in
- * @options-trader/shared.
  */
 
 import type { Database } from 'better-sqlite3';
@@ -14,11 +19,39 @@ import type {
   PendingWithdrawal,
   Phase,
   Trade,
+  User,
   WithdrawalStatus,
 } from '@options-trader/shared';
 
+// ─── row shapes ───────────────────────────────────────────────────────
+
+interface UserRow {
+  id: string;
+  google_sub: string | null;
+  email: string;
+  name: string | null;
+  picture: string | null;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+function rowToUser(row: UserRow): User {
+  const u: User = { id: row.id, email: row.email, createdAt: row.created_at };
+  if (row.name) u.name = row.name;
+  if (row.picture) u.picture = row.picture;
+  if (row.last_login_at) u.lastLoginAt = row.last_login_at;
+  return u;
+}
+
+interface SessionRow {
+  id: string;
+  user_id: string;
+  created_at: string;
+  expires_at: string;
+}
+
 interface AccountRow {
-  id: number;
+  user_id: string;
   principal_x: number | null;
   fee_percent: number;
   position_size_cap: number;
@@ -53,6 +86,7 @@ function rowToAccount(row: AccountRow): Account {
 
 interface TradeRow {
   id: string;
+  user_id: string;
   symbol: string;
   instrument: 'CE' | 'PE' | 'FUT';
   strike: number | null;
@@ -96,6 +130,7 @@ function rowToTrade(row: TradeRow): Trade {
 
 interface WithdrawalRow {
   id: string;
+  user_id: string;
   amount: number;
   from_trade_id: string | null;
   source: 'AUTO' | 'MANUAL';
@@ -119,6 +154,7 @@ function rowToWithdrawal(row: WithdrawalRow): PendingWithdrawal {
 
 interface DecisionRow {
   id: string;
+  user_id: string;
   trade_id: string | null;
   input_json: string;
   checks_json: string;
@@ -140,39 +176,9 @@ function rowToDecision(row: DecisionRow): DecisionRecord {
   return d;
 }
 
-export interface ZerodhaSession {
-  userId: string;
-  userName: string;
-  accessToken: string;
-  publicToken: string;
-  loginAt: string;
-  expiresAt?: string;
-}
-
-interface ZerodhaSessionRow {
-  id: number;
-  user_id: string | null;
-  user_name: string | null;
-  access_token: string | null;
-  public_token: string | null;
-  login_at: string | null;
-  expires_at: string | null;
-}
-
-function rowToZerodhaSession(row: ZerodhaSessionRow): ZerodhaSession {
-  const session: ZerodhaSession = {
-    userId: row.user_id ?? '',
-    userName: row.user_name ?? '',
-    accessToken: row.access_token ?? '',
-    publicToken: row.public_token ?? '',
-    loginAt: row.login_at ?? '',
-  };
-  if (row.expires_at) session.expiresAt = row.expires_at;
-  return session;
-}
-
 interface AdvisorMessageRow {
   id: string;
+  user_id: string;
   conversation_id: string;
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
@@ -192,29 +198,170 @@ function rowToAdvisorMessage(row: AdvisorMessageRow): AdvisorMessage {
   return m;
 }
 
+export interface ZerodhaSession {
+  userIdKite: string;
+  userName: string;
+  accessToken: string;
+  publicToken: string;
+  loginAt: string;
+  expiresAt?: string;
+}
+
+interface ZerodhaSessionRow {
+  user_id: string;
+  user_id_kite: string | null;
+  user_name: string | null;
+  access_token: string | null;
+  public_token: string | null;
+  login_at: string | null;
+  expires_at: string | null;
+}
+
+function rowToZerodhaSession(row: ZerodhaSessionRow): ZerodhaSession {
+  const session: ZerodhaSession = {
+    userIdKite: row.user_id_kite ?? '',
+    userName: row.user_name ?? '',
+    accessToken: row.access_token ?? '',
+    publicToken: row.public_token ?? '',
+    loginAt: row.login_at ?? '',
+  };
+  if (row.expires_at) session.expiresAt = row.expires_at;
+  return session;
+}
+
+// ─── system repo (users, sessions, introspection) ─────────────────────
+
 export function createRepo(db: Database) {
   return {
-    // ── transactions ───────────────────────────────────────────────────
-    /** Wrap multi-step writes in a transaction. */
+    tx<T>(fn: () => T): T {
+      return db.transaction(fn)();
+    },
+
+    // ── users ──────────────────────────────────────────────────────────
+    findUserByGoogleSub(sub: string): User | null {
+      const row = db.prepare('SELECT * FROM users WHERE google_sub = ?').get(sub) as
+        | UserRow
+        | undefined;
+      return row ? rowToUser(row) : null;
+    },
+
+    getUserById(id: string): User | null {
+      const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as
+        | UserRow
+        | undefined;
+      return row ? rowToUser(row) : null;
+    },
+
+    insertUser(user: {
+      id: string;
+      googleSub: string;
+      email: string;
+      name?: string;
+      picture?: string;
+    }): User {
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO users (id, google_sub, email, name, picture, last_login_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(user.id, user.googleSub, user.email, user.name ?? null, user.picture ?? null, now);
+
+      // Seed an empty account row.
+      db.prepare(
+        `INSERT INTO account (user_id) VALUES (?)`,
+      ).run(user.id);
+
+      return this.getUserById(user.id)!;
+    },
+
+    touchUserLogin(userId: string, name?: string, picture?: string): void {
+      const now = new Date().toISOString();
+      db.prepare(
+        `UPDATE users SET last_login_at = ?,
+                          name = COALESCE(?, name),
+                          picture = COALESCE(?, picture)
+          WHERE id = ?`,
+      ).run(now, name ?? null, picture ?? null, userId);
+    },
+
+    // ── sessions ───────────────────────────────────────────────────────
+    insertSession(s: { id: string; userId: string; expiresAt: string }): void {
+      db.prepare(
+        `INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)`,
+      ).run(s.id, s.userId, s.expiresAt);
+    },
+
+    getSessionUserId(sessionId: string): string | null {
+      const row = db
+        .prepare(`SELECT user_id, expires_at FROM sessions WHERE id = ?`)
+        .get(sessionId) as { user_id: string; expires_at: string } | undefined;
+      if (!row) return null;
+      if (new Date(row.expires_at).getTime() < Date.now()) {
+        db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
+        return null;
+      }
+      return row.user_id;
+    },
+
+    deleteSession(sessionId: string): void {
+      db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
+    },
+
+    pruneExpiredSessions(): number {
+      return db.prepare(`DELETE FROM sessions WHERE expires_at < ?`).run(
+        new Date().toISOString(),
+      ).changes;
+    },
+
+    // ── introspection ──────────────────────────────────────────────────
+    listTables(): string[] {
+      const rows = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all() as { name: string }[];
+      return rows.map((r) => r.name);
+    },
+    schemaVersion(): number {
+      const row = db
+        .prepare('SELECT COALESCE(MAX(version), 0) AS v FROM schema_versions')
+        .get() as { v: number };
+      return row.v;
+    },
+  };
+}
+export type Repo = ReturnType<typeof createRepo>;
+
+// ─── per-user repo ────────────────────────────────────────────────────
+
+export function createUserRepo(db: Database, userId: string) {
+  return {
+    userId,
+
     tx<T>(fn: () => T): T {
       return db.transaction(fn)();
     },
 
     // ── account ────────────────────────────────────────────────────────
     getAccount(): Account {
-      const row = db.prepare('SELECT * FROM account WHERE id = 1').get() as AccountRow | undefined;
-      if (!row) throw new Error('Account row missing — migration seed did not run.');
+      const row = db.prepare('SELECT * FROM account WHERE user_id = ?').get(userId) as
+        | AccountRow
+        | undefined;
+      if (!row) {
+        // Defensive: create the row if missing.
+        db.prepare('INSERT INTO account (user_id) VALUES (?)').run(userId);
+        const fresh = db.prepare('SELECT * FROM account WHERE user_id = ?').get(userId) as AccountRow;
+        return rowToAccount(fresh);
+      }
       return rowToAccount(row);
     },
 
-    /** Replace the entire account row (used after rule-engine state transitions). */
     putAccount(account: Account): void {
       db.prepare(
         `UPDATE account SET
           principal_x = ?, fee_percent = ?, position_size_cap = ?, phase = ?,
           investable_corpus = ?, set_aside = ?, cash_withdrawn = ?,
           realized_pnl = ?, fees_paid = ?, ai_enabled = ?, lock_override_at = ?
-         WHERE id = 1`,
+         WHERE user_id = ?`,
       ).run(
         account.principalX,
         account.feePercent,
@@ -227,39 +374,45 @@ export function createRepo(db: Database) {
         account.feesPaid,
         account.aiEnabled ? 1 : 0,
         account.lockOverrideAt ?? null,
+        userId,
       );
     },
 
     /**
-     * Wipe every domain table and re-seed an empty account row. Schema
-     * version is preserved so migrations don't re-run unnecessarily.
+     * Wipe this user's data and reset the account row. Schema version is
+     * preserved. Sessions for this user are kept so the user stays logged in.
      */
     resetAll(): void {
       db.transaction(() => {
-        db.exec(`
-          DELETE FROM advisor_messages;
-          DELETE FROM decisions;
-          DELETE FROM pending_withdrawals;
-          DELETE FROM trades;
-          DELETE FROM zerodha_sessions;
-          UPDATE zerodha_credentials SET api_key = NULL, api_secret = NULL, updated_at = NULL WHERE id = 1;
-          DELETE FROM account;
-          INSERT INTO account (id) VALUES (1);
-        `);
+        db.prepare('DELETE FROM advisor_messages WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM decisions WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM pending_withdrawals WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM trades WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM zerodha_sessions WHERE user_id = ?').run(userId);
+        db.prepare(
+          `UPDATE zerodha_credentials SET api_key = NULL, api_secret = NULL, updated_at = NULL
+            WHERE user_id = ?`,
+        ).run(userId);
+        db.prepare('DELETE FROM account WHERE user_id = ?').run(userId);
+        db.prepare('INSERT INTO account (user_id) VALUES (?)').run(userId);
       })();
     },
 
     // ── trades ─────────────────────────────────────────────────────────
     countTrades(): number {
-      return (db.prepare('SELECT COUNT(*) AS c FROM trades').get() as { c: number }).c;
+      return (db.prepare('SELECT COUNT(*) AS c FROM trades WHERE user_id = ?').get(userId) as {
+        c: number;
+      }).c;
     },
     getTradeById(id: string): Trade | null {
-      const row = db.prepare('SELECT * FROM trades WHERE id = ?').get(id) as TradeRow | undefined;
+      const row = db
+        .prepare('SELECT * FROM trades WHERE id = ? AND user_id = ?')
+        .get(id, userId) as TradeRow | undefined;
       return row ? rowToTrade(row) : null;
     },
     listTrades(filter: { status?: 'OPEN' | 'CLOSED'; symbol?: string; instrument?: 'CE' | 'PE' | 'FUT' } = {}): Trade[] {
-      const clauses: string[] = [];
-      const params: unknown[] = [];
+      const clauses: string[] = ['user_id = ?'];
+      const params: unknown[] = [userId];
       if (filter.status) {
         clauses.push('status = ?');
         params.push(filter.status);
@@ -272,20 +425,23 @@ export function createRepo(db: Database) {
         clauses.push('instrument = ?');
         params.push(filter.instrument);
       }
-      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-      const rows = db.prepare(`SELECT * FROM trades ${where} ORDER BY entry_at DESC`).all(...params) as TradeRow[];
+      const where = `WHERE ${clauses.join(' AND ')}`;
+      const rows = db
+        .prepare(`SELECT * FROM trades ${where} ORDER BY entry_at DESC`)
+        .all(...params) as TradeRow[];
       return rows.map(rowToTrade);
     },
 
     insertTrade(trade: Trade): void {
       db.prepare(
         `INSERT INTO trades (
-           id, symbol, instrument, strike, expiry, lot_size, qty,
+           id, user_id, symbol, instrument, strike, expiry, lot_size, qty,
            entry_price, entry_at, exit_price, exit_at, status,
            fees, gross_pnl, net_pnl, notes, agent_source
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         trade.id,
+        userId,
         trade.symbol,
         trade.instrument,
         trade.strike ?? null,
@@ -305,7 +461,6 @@ export function createRepo(db: Database) {
       );
     },
 
-    /** Replace an existing trade row (used to record a close). */
     putTrade(trade: Trade): void {
       const result = db.prepare(
         `UPDATE trades SET
@@ -313,7 +468,7 @@ export function createRepo(db: Database) {
            qty = ?, entry_price = ?, entry_at = ?, exit_price = ?, exit_at = ?,
            status = ?, fees = ?, gross_pnl = ?, net_pnl = ?, notes = ?,
            agent_source = ?
-         WHERE id = ?`,
+         WHERE id = ? AND user_id = ?`,
       ).run(
         trade.symbol,
         trade.instrument,
@@ -332,14 +487,20 @@ export function createRepo(db: Database) {
         trade.notes ?? null,
         trade.agentSource ?? null,
         trade.id,
+        userId,
       );
       if (result.changes === 0) throw new Error(`putTrade: trade ${trade.id} not found`);
     },
 
     // ── withdrawals ────────────────────────────────────────────────────
     listWithdrawals(filter: { status?: WithdrawalStatus } = {}): PendingWithdrawal[] {
-      const where = filter.status ? 'WHERE status = ?' : '';
-      const params = filter.status ? [filter.status] : [];
+      const clauses: string[] = ['user_id = ?'];
+      const params: unknown[] = [userId];
+      if (filter.status) {
+        clauses.push('status = ?');
+        params.push(filter.status);
+      }
+      const where = `WHERE ${clauses.join(' AND ')}`;
       const rows = db
         .prepare(`SELECT * FROM pending_withdrawals ${where} ORDER BY created_at DESC`)
         .all(...params) as WithdrawalRow[];
@@ -348,17 +509,18 @@ export function createRepo(db: Database) {
 
     getWithdrawalById(id: string): PendingWithdrawal | null {
       const row = db
-        .prepare('SELECT * FROM pending_withdrawals WHERE id = ?')
-        .get(id) as WithdrawalRow | undefined;
+        .prepare('SELECT * FROM pending_withdrawals WHERE id = ? AND user_id = ?')
+        .get(id, userId) as WithdrawalRow | undefined;
       return row ? rowToWithdrawal(row) : null;
     },
 
     insertWithdrawal(w: PendingWithdrawal): void {
       db.prepare(
-        `INSERT INTO pending_withdrawals (id, amount, from_trade_id, source, status, created_at, decided_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pending_withdrawals (id, user_id, amount, from_trade_id, source, status, created_at, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         w.id,
+        userId,
         w.amount,
         w.fromTradeId ?? null,
         w.source,
@@ -372,7 +534,7 @@ export function createRepo(db: Database) {
       const result = db.prepare(
         `UPDATE pending_withdrawals
             SET amount = ?, from_trade_id = ?, source = ?, status = ?, decided_at = ?
-          WHERE id = ?`,
+          WHERE id = ? AND user_id = ?`,
       ).run(
         w.amount,
         w.fromTradeId ?? null,
@@ -380,6 +542,7 @@ export function createRepo(db: Database) {
         w.status,
         w.decidedAt ?? null,
         w.id,
+        userId,
       );
       if (result.changes === 0) throw new Error(`putWithdrawal: ${w.id} not found`);
     },
@@ -387,17 +550,18 @@ export function createRepo(db: Database) {
     // ── decisions ──────────────────────────────────────────────────────
     listDecisions(limit = 50): DecisionRecord[] {
       const rows = db
-        .prepare('SELECT * FROM decisions ORDER BY decided_at DESC LIMIT ?')
-        .all(limit) as DecisionRow[];
+        .prepare('SELECT * FROM decisions WHERE user_id = ? ORDER BY decided_at DESC LIMIT ?')
+        .all(userId, limit) as DecisionRow[];
       return rows.map(rowToDecision);
     },
 
     insertDecision(d: DecisionRecord): void {
       db.prepare(
-        `INSERT INTO decisions (id, trade_id, input_json, checks_json, verdict, decided_at, accepted_by_user)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO decisions (id, user_id, trade_id, input_json, checks_json, verdict, decided_at, accepted_by_user)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         d.id,
+        userId,
         d.tradeId ?? null,
         JSON.stringify(d.input),
         JSON.stringify(d.checks),
@@ -410,8 +574,10 @@ export function createRepo(db: Database) {
     // ── advisor messages ───────────────────────────────────────────────
     listAdvisorMessages(conversationId: string): AdvisorMessage[] {
       const rows = db
-        .prepare('SELECT * FROM advisor_messages WHERE conversation_id = ? ORDER BY created_at ASC')
-        .all(conversationId) as AdvisorMessageRow[];
+        .prepare(
+          'SELECT * FROM advisor_messages WHERE user_id = ? AND conversation_id = ? ORDER BY created_at ASC',
+        )
+        .all(userId, conversationId) as AdvisorMessageRow[];
       return rows.map(rowToAdvisorMessage);
     },
 
@@ -422,20 +588,22 @@ export function createRepo(db: Database) {
                   MAX(created_at) AS lastAt,
                   COUNT(*)        AS turns
              FROM advisor_messages
+            WHERE user_id = ?
             GROUP BY conversation_id
             ORDER BY lastAt DESC
             LIMIT ?`,
         )
-        .all(limit) as { conversationId: string; lastAt: string; turns: number }[];
+        .all(userId, limit) as { conversationId: string; lastAt: string; turns: number }[];
       return rows;
     },
 
     insertAdvisorMessage(m: AdvisorMessage): void {
       db.prepare(
-        `INSERT INTO advisor_messages (id, conversation_id, role, content, tool_payload, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO advisor_messages (id, user_id, conversation_id, role, content, tool_payload, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         m.id,
+        userId,
         m.conversationId,
         m.role,
         m.content,
@@ -447,25 +615,26 @@ export function createRepo(db: Database) {
     // ── zerodha sessions ───────────────────────────────────────────────
     getZerodhaSession(): ZerodhaSession | null {
       const row = db
-        .prepare('SELECT * FROM zerodha_sessions WHERE id = 1')
-        .get() as ZerodhaSessionRow | undefined;
+        .prepare('SELECT * FROM zerodha_sessions WHERE user_id = ?')
+        .get(userId) as ZerodhaSessionRow | undefined;
       if (!row || !row.access_token) return null;
       return rowToZerodhaSession(row);
     },
 
     putZerodhaSession(session: ZerodhaSession): void {
       db.prepare(
-        `INSERT INTO zerodha_sessions (id, user_id, user_name, access_token, public_token, login_at, expires_at)
-         VALUES (1, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           user_id      = excluded.user_id,
+        `INSERT INTO zerodha_sessions (user_id, user_id_kite, user_name, access_token, public_token, login_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           user_id_kite = excluded.user_id_kite,
            user_name    = excluded.user_name,
            access_token = excluded.access_token,
            public_token = excluded.public_token,
            login_at     = excluded.login_at,
            expires_at   = excluded.expires_at`,
       ).run(
-        session.userId,
+        userId,
+        session.userIdKite,
         session.userName,
         session.accessToken,
         session.publicToken,
@@ -475,52 +644,37 @@ export function createRepo(db: Database) {
     },
 
     clearZerodhaSession(): void {
-      db.prepare('DELETE FROM zerodha_sessions WHERE id = 1').run();
+      db.prepare('DELETE FROM zerodha_sessions WHERE user_id = ?').run(userId);
     },
 
     // ── zerodha credentials ────────────────────────────────────────────
     getZerodhaCredentials(): { apiKey: string; apiSecret: string; updatedAt: string | null } | null {
       const row = db
-        .prepare('SELECT api_key, api_secret, updated_at FROM zerodha_credentials WHERE id = 1')
-        .get() as { api_key: string | null; api_secret: string | null; updated_at: string | null } | undefined;
-      if (!row) return null;
-      if (!row.api_key || !row.api_secret) return null;
+        .prepare('SELECT api_key, api_secret, updated_at FROM zerodha_credentials WHERE user_id = ?')
+        .get(userId) as { api_key: string | null; api_secret: string | null; updated_at: string | null } | undefined;
+      if (!row || !row.api_key || !row.api_secret) return null;
       return { apiKey: row.api_key, apiSecret: row.api_secret, updatedAt: row.updated_at };
     },
 
     putZerodhaCredentials(apiKey: string, apiSecret: string, now: string): void {
       db.prepare(
-        `INSERT INTO zerodha_credentials (id, api_key, api_secret, updated_at)
-         VALUES (1, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO zerodha_credentials (user_id, api_key, api_secret, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
            api_key    = excluded.api_key,
            api_secret = excluded.api_secret,
            updated_at = excluded.updated_at`,
-      ).run(apiKey, apiSecret, now);
+      ).run(userId, apiKey, apiSecret, now);
     },
 
     clearZerodhaCredentials(): void {
       db.prepare(
         `UPDATE zerodha_credentials
             SET api_key = NULL, api_secret = NULL, updated_at = NULL
-          WHERE id = 1`,
-      ).run();
-    },
-
-    // ── introspection (used by /api/health/db) ─────────────────────────
-    listTables(): string[] {
-      const rows = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-        .all() as { name: string }[];
-      return rows.map((r) => r.name);
-    },
-    schemaVersion(): number {
-      const row = db
-        .prepare('SELECT COALESCE(MAX(version), 0) AS v FROM schema_versions')
-        .get() as { v: number };
-      return row.v;
+          WHERE user_id = ?`,
+      ).run(userId);
     },
   };
 }
 
-export type Repo = ReturnType<typeof createRepo>;
+export type UserRepo = ReturnType<typeof createUserRepo>;

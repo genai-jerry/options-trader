@@ -6,8 +6,7 @@ import {
   evaluateDecision,
   type Trade,
 } from '@options-trader/shared';
-import { getDb } from '../db/index.js';
-import { createRepo } from '../db/repo.js';
+import { userRepoFor } from '../auth/middleware.js';
 import { newId, nowISO, paramString, parseBody, wrap } from './_helpers.js';
 
 export const tradesRouter = Router();
@@ -19,7 +18,7 @@ const StatusSchema = z.enum(['OPEN', 'CLOSED']);
 tradesRouter.get(
   '/',
   wrap((req, res) => {
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     const filter: { status?: 'OPEN' | 'CLOSED'; instrument?: 'CE' | 'PE' | 'FUT'; symbol?: string } =
       {};
     const status = StatusSchema.safeParse(req.query.status);
@@ -33,8 +32,7 @@ tradesRouter.get(
   }),
 );
 
-// POST /api/trades — open a new trade. Server runs the deterministic
-// engine and refuses BLOCK verdicts (C1–C3).
+// POST /api/trades — open a new trade.
 const NewTradeSchema = z.object({
   symbol: z.string().min(1),
   instrument: InstrumentSchema,
@@ -55,7 +53,7 @@ tradesRouter.post(
     const body = parseBody(NewTradeSchema, req, res);
     if (!body) return;
 
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     const account = repo.getAccount();
     const openTrades = repo.listTrades({ status: 'OPEN' });
     const snapshot = accountToSnapshot(account);
@@ -66,7 +64,6 @@ tradesRouter.post(
     });
 
     if (decision.verdict === 'BLOCK') {
-      // Persist the BLOCK decision for audit, but refuse the trade.
       repo.tx(() => {
         repo.insertDecision(decision);
       });
@@ -105,7 +102,7 @@ tradesRouter.post(
   }),
 );
 
-// POST /api/trades/:id/close — record exit, run R1/R2/R3.
+// POST /api/trades/:id/close
 const CloseSchema = z.object({
   exitPrice: z.number().int().nonnegative(),
 });
@@ -117,7 +114,7 @@ tradesRouter.post(
     const body = parseBody(CloseSchema, req, res);
     if (!body) return;
 
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     const trade = repo.getTradeById(id);
     if (!trade) {
       res.status(404).json({ error: 'Trade not found.' });

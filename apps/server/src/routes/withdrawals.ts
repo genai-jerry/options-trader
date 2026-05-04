@@ -5,19 +5,17 @@ import {
   confirmWithdrawal,
   type PendingWithdrawal,
 } from '@options-trader/shared';
-import { getDb } from '../db/index.js';
-import { createRepo } from '../db/repo.js';
+import { userRepoFor } from '../auth/middleware.js';
 import { newId, nowISO, paramString, parseBody, wrap } from './_helpers.js';
 
 export const withdrawalsRouter = Router();
 
 const StatusSchema = z.enum(['PENDING', 'CONFIRMED', 'CANCELLED']);
 
-// GET /api/withdrawals — filter by status.
 withdrawalsRouter.get(
   '/',
   wrap((req, res) => {
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     const filter: { status?: 'PENDING' | 'CONFIRMED' | 'CANCELLED' } = {};
     const parsed = StatusSchema.safeParse(req.query.status);
     if (parsed.success) filter.status = parsed.data;
@@ -25,12 +23,6 @@ withdrawalsRouter.get(
   }),
 );
 
-// POST /api/withdrawals — manual cash withdrawal.
-//
-// Reduces investableCorpus by `amount` and increments cashWithdrawn in a
-// single transaction. Refuses to breach the 0.5X lock floor; the trade
-// engine's R3 still applies on the next close so this guard is just a
-// preflight.
 const ManualWithdrawSchema = z.object({
   amount: z.number().int().positive(),
   notes: z.string().optional(),
@@ -42,7 +34,7 @@ withdrawalsRouter.post(
     const body = parseBody(ManualWithdrawSchema, req, res);
     if (!body) return;
 
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     const account = repo.getAccount();
 
     if (account.principalX === null) {
@@ -88,12 +80,11 @@ withdrawalsRouter.post(
   }),
 );
 
-// POST /api/withdrawals/:id/confirm — R5 confirm.
 withdrawalsRouter.post(
   '/:id/confirm',
   wrap((req, res) => {
     const id = paramString(req.params.id);
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     const w = repo.getWithdrawalById(id);
     if (!w) {
       res.status(404).json({ error: 'Withdrawal not found.' });
@@ -113,12 +104,11 @@ withdrawalsRouter.post(
   }),
 );
 
-// POST /api/withdrawals/:id/cancel — R5 cancel.
 withdrawalsRouter.post(
   '/:id/cancel',
   wrap((req, res) => {
     const id = paramString(req.params.id);
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     const w = repo.getWithdrawalById(id);
     if (!w) {
       res.status(404).json({ error: 'Withdrawal not found.' });

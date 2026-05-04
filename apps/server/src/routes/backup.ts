@@ -1,9 +1,9 @@
 /**
- * JSON export / import of the entire SQLite state.
+ * JSON export / import scoped to the authenticated user.
  *
- * Export is the canonical "what's in the DB right now". Import is
- * destructive: it wipes everything and re-inserts the payload inside a
- * single transaction. Used as a manual backup / restore.
+ * Export is "everything in the DB for this user". Import is destructive
+ * for this user only: wipes their rows and re-inserts the payload inside
+ * a single transaction. Other users' data is never touched.
  *
  * The Zerodha access token is intentionally NOT exported — re-login on
  * import is required.
@@ -17,16 +17,15 @@ import type {
   PendingWithdrawal,
   Trade,
 } from '@options-trader/shared';
-import { getDb } from '../db/index.js';
-import { createRepo } from '../db/repo.js';
+import { userRepoFor } from '../auth/middleware.js';
 import { parseBody, wrap } from './_helpers.js';
 
 export const backupRouter = Router();
 
 backupRouter.get(
   '/export',
-  wrap((_req, res) => {
-    const repo = createRepo(getDb());
+  wrap((req, res) => {
+    const repo = userRepoFor(req);
     const account = repo.getAccount();
     const trades = repo.listTrades();
     const withdrawals = repo.listWithdrawals();
@@ -63,7 +62,7 @@ backupRouter.post(
   wrap((req, res) => {
     const body = parseBody(ImportSchema, req, res);
     if (!body) return;
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     repo.tx(() => {
       repo.resetAll();
       repo.putAccount(body.account as Parameters<typeof repo.putAccount>[0]);

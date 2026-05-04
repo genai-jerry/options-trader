@@ -1,22 +1,20 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { env } from '../env.js';
-import { getDb } from '../db/index.js';
-import { createRepo } from '../db/repo.js';
+import { userRepoFor } from '../auth/middleware.js';
 import { nowISO, parseBody, wrap } from './_helpers.js';
 import { createKiteClient, KiteError, type KiteClient } from '../broker/KiteClient.js';
+import type { UserRepo } from '../db/repo.js';
 
 export const zerodhaRouter = Router();
 
 interface ResolvedCreds {
   apiKey: string;
   apiSecret: string;
-  /** Where the credentials came from. */
   source: 'db' | 'env';
 }
 
-function resolveCredentials(): ResolvedCreds | null {
-  const repo = createRepo(getDb());
+function resolveCredentials(repo: UserRepo): ResolvedCreds | null {
   const fromDb = repo.getZerodhaCredentials();
   if (fromDb) return { apiKey: fromDb.apiKey, apiSecret: fromDb.apiSecret, source: 'db' };
   if (env.KITE_API_KEY && env.KITE_API_SECRET) {
@@ -25,22 +23,20 @@ function resolveCredentials(): ResolvedCreds | null {
   return null;
 }
 
-// Build a fresh client per request — credentials may have been rotated in
-// the Settings UI between calls. KiteClient is cheap to construct.
-function getClient(): KiteClient | null {
-  const creds = resolveCredentials();
+function getClient(repo: UserRepo): KiteClient | null {
+  const creds = resolveCredentials(repo);
   if (!creds) return null;
   return createKiteClient({ apiKey: creds.apiKey, apiSecret: creds.apiSecret });
 }
 
-function notConfigured(res: Parameters<Parameters<typeof wrap>[0]>[1]): void {
+function notConfigured(res: Response): void {
   res.status(409).json({
     error:
       'Zerodha not configured. Set the API key and secret in Settings → Zerodha credentials, or via apps/server/.env.',
   });
 }
 
-function notLoggedIn(res: Parameters<Parameters<typeof wrap>[0]>[1]): void {
+function notLoggedIn(res: Response): void {
   res.status(401).json({
     error: 'No active Zerodha session. Connect via /api/zerodha/login-url.',
   });
@@ -50,27 +46,26 @@ function notLoggedIn(res: Parameters<Parameters<typeof wrap>[0]>[1]): void {
 
 zerodhaRouter.get(
   '/status',
-  wrap((_req, res) => {
-    const repo = createRepo(getDb());
+  wrap((req, res) => {
+    const repo = userRepoFor(req);
     const session = repo.getZerodhaSession();
-    const creds = resolveCredentials();
+    const creds = resolveCredentials(repo);
     res.json({
       configured: Boolean(creds),
       credentialsSource: creds?.source ?? null,
       connected: Boolean(session),
       ...(session
-        ? { userId: session.userId, userName: session.userName, loginAt: session.loginAt }
+        ? { userId: session.userIdKite, userName: session.userName, loginAt: session.loginAt }
         : {}),
     });
   }),
 );
 
-// Credentials management — never echoes the secret back.
 zerodhaRouter.get(
   '/credentials',
-  wrap((_req, res) => {
-    const creds = resolveCredentials();
-    const repo = createRepo(getDb());
+  wrap((req, res) => {
+    const repo = userRepoFor(req);
+    const creds = resolveCredentials(repo);
     const dbCreds = repo.getZerodhaCredentials();
     res.json({
       configured: Boolean(creds),
@@ -93,9 +88,8 @@ zerodhaRouter.put(
   wrap((req, res) => {
     const body = parseBody(CredentialsSchema, req, res);
     if (!body) return;
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     repo.putZerodhaCredentials(body.apiKey.trim(), body.apiSecret.trim(), nowISO());
-    // A new key invalidates any active session.
     repo.clearZerodhaSession();
     res.status(204).end();
   }),
@@ -103,23 +97,19 @@ zerodhaRouter.put(
 
 zerodhaRouter.delete(
   '/credentials',
-  wrap((_req, res) => {
-    const repo = createRepo(getDb());
+  wrap((req, res) => {
+    const repo = userRepoFor(req);
     repo.clearZerodhaCredentials();
     repo.clearZerodhaSession();
     res.status(204).end();
   }),
 );
 
-function maskKey(key: string): string {
-  if (key.length <= 4) return '•'.repeat(key.length);
-  return `${key.slice(0, 2)}${'•'.repeat(Math.max(0, key.length - 6))}${key.slice(-4)}`;
-}
-
 zerodhaRouter.get(
   '/login-url',
-  wrap((_req, res) => {
-    const client = getClient();
+  wrap((req, res) => {
+    const repo = userRepoFor(req);
+    const client = getClient(repo);
     if (!client) return notConfigured(res);
     res.json({ url: client.loginUrl() });
   }),
@@ -136,14 +126,14 @@ zerodhaRouter.post(
   wrap(async (req, res) => {
     const body = parseBody(ExchangeSchema, req, res);
     if (!body) return;
-    const client = getClient();
+    const repo = userRepoFor(req);
+    const client = getClient(repo);
     if (!client) return notConfigured(res);
 
     try {
       const session = await client.exchangeRequestToken(body.request_token);
-      const repo = createRepo(getDb());
       repo.putZerodhaSession({
-        userId: session.user_id,
+        userIdKite: session.user_id,
         userName: session.user_name,
         accessToken: session.access_token,
         publicToken: session.public_token,
@@ -160,15 +150,30 @@ zerodhaRouter.post(
 
 // ─── Read-only data endpoints ────────────────────────────────────────
 
+function broker(req: Request, res: Response):
+  | { client: KiteClient; accessToken: string }
+  | null {
+  const repo = userRepoFor(req);
+  const client = getClient(repo);
+  if (!client) {
+    notConfigured(res);
+    return null;
+  }
+  const session = repo.getZerodhaSession();
+  if (!session) {
+    notLoggedIn(res);
+    return null;
+  }
+  return { client, accessToken: session.accessToken };
+}
+
 zerodhaRouter.get(
   '/funds',
-  wrap(async (_req, res) => {
-    const client = getClient();
-    if (!client) return notConfigured(res);
-    const session = createRepo(getDb()).getZerodhaSession();
-    if (!session) return notLoggedIn(res);
+  wrap(async (req, res) => {
+    const b = broker(req, res);
+    if (!b) return;
     try {
-      res.json(await client.getFunds(session.accessToken));
+      res.json(await b.client.getFunds(b.accessToken));
     } catch (err) {
       handleKiteError(err, res);
     }
@@ -177,13 +182,11 @@ zerodhaRouter.get(
 
 zerodhaRouter.get(
   '/holdings',
-  wrap(async (_req, res) => {
-    const client = getClient();
-    if (!client) return notConfigured(res);
-    const session = createRepo(getDb()).getZerodhaSession();
-    if (!session) return notLoggedIn(res);
+  wrap(async (req, res) => {
+    const b = broker(req, res);
+    if (!b) return;
     try {
-      res.json(await client.getHoldings(session.accessToken));
+      res.json(await b.client.getHoldings(b.accessToken));
     } catch (err) {
       handleKiteError(err, res);
     }
@@ -192,13 +195,11 @@ zerodhaRouter.get(
 
 zerodhaRouter.get(
   '/positions',
-  wrap(async (_req, res) => {
-    const client = getClient();
-    if (!client) return notConfigured(res);
-    const session = createRepo(getDb()).getZerodhaSession();
-    if (!session) return notLoggedIn(res);
+  wrap(async (req, res) => {
+    const b = broker(req, res);
+    if (!b) return;
     try {
-      res.json(await client.getPositions(session.accessToken));
+      res.json(await b.client.getPositions(b.accessToken));
     } catch (err) {
       handleKiteError(err, res);
     }
@@ -207,13 +208,11 @@ zerodhaRouter.get(
 
 zerodhaRouter.get(
   '/orders',
-  wrap(async (_req, res) => {
-    const client = getClient();
-    if (!client) return notConfigured(res);
-    const session = createRepo(getDb()).getZerodhaSession();
-    if (!session) return notLoggedIn(res);
+  wrap(async (req, res) => {
+    const b = broker(req, res);
+    if (!b) return;
     try {
-      res.json(await client.getOrders(session.accessToken));
+      res.json(await b.client.getOrders(b.accessToken));
     } catch (err) {
       handleKiteError(err, res);
     }
@@ -222,9 +221,9 @@ zerodhaRouter.get(
 
 zerodhaRouter.post(
   '/disconnect',
-  wrap(async (_req, res) => {
-    const client = getClient();
-    const repo = createRepo(getDb());
+  wrap(async (req, res) => {
+    const repo = userRepoFor(req);
+    const client = getClient(repo);
     const session = repo.getZerodhaSession();
     if (client && session) {
       await client.invalidateAccessToken(session.accessToken);
@@ -234,13 +233,13 @@ zerodhaRouter.post(
   }),
 );
 
-function handleKiteError(
-  err: unknown,
-  res: Parameters<Parameters<typeof wrap>[0]>[1],
-): void {
+function maskKey(key: string): string {
+  if (key.length <= 4) return '•'.repeat(key.length);
+  return `${key.slice(0, 2)}${'•'.repeat(Math.max(0, key.length - 6))}${key.slice(-4)}`;
+}
+
+function handleKiteError(err: unknown, res: Response): void {
   if (err instanceof KiteError) {
-    // 403 with error_type=TokenException usually means daily expiry — surface
-    // a 401 to the frontend so the user knows to reconnect.
     const status =
       err.errorType === 'TokenException' || err.status === 403
         ? 401

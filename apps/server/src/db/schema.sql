@@ -13,9 +13,29 @@ CREATE TABLE IF NOT EXISTS schema_versions (
   applied_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  id              TEXT PRIMARY KEY,
+  google_sub      TEXT UNIQUE,
+  email           TEXT NOT NULL,
+  name            TEXT,
+  picture         TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  last_login_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  expires_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user    ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS account (
-  id                INTEGER PRIMARY KEY CHECK (id = 1),
-  principal_x       INTEGER,                -- paise; NULL until Settings sets it
+  user_id           TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  principal_x       INTEGER,
   fee_percent       REAL    NOT NULL DEFAULT 0.05,
   position_size_cap REAL    NOT NULL DEFAULT 0.25,
   phase             TEXT    NOT NULL DEFAULT 'BOOTSTRAP'
@@ -32,6 +52,7 @@ CREATE TABLE IF NOT EXISTS account (
 
 CREATE TABLE IF NOT EXISTS trades (
   id            TEXT    PRIMARY KEY,
+  user_id       TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   symbol        TEXT    NOT NULL,
   instrument    TEXT    NOT NULL CHECK (instrument IN ('CE','PE','FUT')),
   strike        INTEGER,
@@ -51,11 +72,13 @@ CREATE TABLE IF NOT EXISTS trades (
   created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_trades_user   ON trades(user_id);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 
 CREATE TABLE IF NOT EXISTS pending_withdrawals (
   id            TEXT    PRIMARY KEY,
+  user_id       TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   amount        INTEGER NOT NULL CHECK (amount >= 0),
   from_trade_id TEXT    REFERENCES trades(id) ON DELETE RESTRICT,
   source        TEXT    NOT NULL DEFAULT 'AUTO' CHECK (source IN ('AUTO','MANUAL')),
@@ -64,11 +87,13 @@ CREATE TABLE IF NOT EXISTS pending_withdrawals (
   decided_at    TEXT
 );
 
+CREATE INDEX IF NOT EXISTS idx_withdrawals_user   ON pending_withdrawals(user_id);
 CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON pending_withdrawals(status);
 CREATE INDEX IF NOT EXISTS idx_withdrawals_source ON pending_withdrawals(source);
 
 CREATE TABLE IF NOT EXISTS decisions (
   id              TEXT    PRIMARY KEY,
+  user_id         TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   trade_id        TEXT    REFERENCES trades(id) ON DELETE SET NULL,
   input_json      TEXT    NOT NULL,
   checks_json     TEXT    NOT NULL,
@@ -76,9 +101,11 @@ CREATE TABLE IF NOT EXISTS decisions (
   decided_at      TEXT    NOT NULL,
   accepted_by_user INTEGER NOT NULL CHECK (accepted_by_user IN (0,1))
 );
+CREATE INDEX IF NOT EXISTS idx_decisions_user ON decisions(user_id);
 
 CREATE TABLE IF NOT EXISTS advisor_messages (
   id              TEXT    PRIMARY KEY,
+  user_id         TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   conversation_id TEXT    NOT NULL,
   role            TEXT    NOT NULL CHECK (role IN ('system','user','assistant','tool')),
   content         TEXT    NOT NULL,
@@ -86,12 +113,13 @@ CREATE TABLE IF NOT EXISTS advisor_messages (
   created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_advisor_user ON advisor_messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_advisor_messages_conv
   ON advisor_messages(conversation_id, created_at);
 
 CREATE TABLE IF NOT EXISTS zerodha_sessions (
-  id            INTEGER PRIMARY KEY CHECK (id = 1),
-  user_id       TEXT,
+  user_id       TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  user_id_kite  TEXT,
   user_name     TEXT,
   access_token  TEXT,
   public_token  TEXT,
@@ -100,7 +128,7 @@ CREATE TABLE IF NOT EXISTS zerodha_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS zerodha_credentials (
-  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   api_key     TEXT,
   api_secret  TEXT,
   updated_at  TEXT

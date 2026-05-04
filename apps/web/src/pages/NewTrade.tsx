@@ -433,13 +433,18 @@ function DetailedForm({ onChange, onSubmit, submitting, submitBlocked, error }: 
 
 // ─── Quick form (advisor-trusted: only money matters) ───────────────
 
+// Only Capital Deployed is required. Expected exit value and Max acceptable
+// loss are optional — left blank, the form treats max loss as the full
+// capital (worst case is losing the whole trade) and expected exit as the
+// capital itself (no expected upside, which makes the rules engine WARN on
+// reward/risk in BOOTSTRAP — that's intentional and useful feedback).
 const QuickSchema = z.object({
   label: z.string().optional(),
   agentSource: z.string().optional(),
   notes: z.string().optional(),
-  capitalRupees: z.coerce.number().positive('Must be > 0'),
-  expectedExitRupees: z.coerce.number().nonnegative('Must be >= 0'),
-  maxLossRupees: z.coerce.number().positive('Must be > 0'),
+  capitalRupees: z.coerce.number().positive('Capital deployed is required'),
+  expectedExitRupees: z.coerce.number().nonnegative().optional(),
+  maxLossRupees: z.coerce.number().nonnegative().optional(),
 });
 type QuickValues = z.infer<typeof QuickSchema>;
 
@@ -463,15 +468,28 @@ function quickToInput(data: QuickValues): NewTradeInput {
     .toUpperCase()
     .slice(0, 64);
 
+  // Defaults for the optional fields:
+  //   maxLoss = capital  → C3 treats worst case as losing the entire trade
+  //   expectedExit = capital → no upside; C4 will WARN in BOOTSTRAP
+  const capital = rupeesToPaise(data.capitalRupees);
+  const maxLoss =
+    data.maxLossRupees !== undefined && data.maxLossRupees > 0
+      ? rupeesToPaise(data.maxLossRupees)
+      : capital;
+  const expectedExit =
+    data.expectedExitRupees !== undefined && data.expectedExitRupees > 0
+      ? rupeesToPaise(data.expectedExitRupees)
+      : capital;
+
   return {
     symbol,
     instrument: 'FUT',
     expiry: expiry.toISOString().slice(0, 10),
     lotSize: 1,
     qty: 1,
-    entryPrice: rupeesToPaise(data.capitalRupees),
-    expectedExit: rupeesToPaise(data.expectedExitRupees),
-    maxAcceptableLoss: rupeesToPaise(data.maxLossRupees),
+    entryPrice: capital,
+    expectedExit,
+    maxAcceptableLoss: maxLoss,
     ...(data.notes ? { notes: data.notes } : {}),
     ...(data.agentSource ? { agentSource: data.agentSource } : {}),
   };
@@ -493,7 +511,7 @@ function QuickForm({ onChange, onSubmit, submitting, submitBlocked, error }: For
   const values = watch();
 
   useEffect(() => {
-    if (!values.capitalRupees || !values.maxLossRupees) {
+    if (!values.capitalRupees) {
       onChange(null);
       return;
     }
@@ -509,14 +527,15 @@ function QuickForm({ onChange, onSubmit, submitting, submitBlocked, error }: For
         <Typography variant="h6">Quick trade</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           For advisor-recommended trades where you trust the symbol and contract
-          details. Only the three money fields drive the rules engine — the trade
-          is recorded as a single FUT-style unit (lot size 1, qty 1) with a
-          30-day expiry. All checks (C1–C6) still run against your live state.
+          details. Only Capital deployed is required; the rest fall back to
+          sensible defaults (max loss = capital, expected exit = capital). The
+          trade is recorded as a single FUT-style unit (lot size 1, qty 1) with
+          a 30-day expiry; all checks (C1–C6) still run against your live state.
         </Typography>
 
         <Stack spacing={2}>
           <TextField
-            label="Capital deployed"
+            label="Capital deployed *"
             type="number"
             fullWidth
             autoFocus
@@ -524,13 +543,15 @@ function QuickForm({ onChange, onSubmit, submitting, submitBlocked, error }: For
             error={!!formState.errors.capitalRupees}
             helperText={
               formState.errors.capitalRupees?.message ??
-              'Total ₹ committed (debited from corpus on Accept).'
+              'Total ₹ committed. Debited from your corpus on Accept.'
             }
             slotProps={{
               input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
             }}
             {...register('capitalRupees')}
           />
+
+          <Divider>Optional</Divider>
 
           <TextField
             label="Expected exit value"
@@ -540,7 +561,7 @@ function QuickForm({ onChange, onSubmit, submitting, submitBlocked, error }: For
             error={!!formState.errors.expectedExitRupees}
             helperText={
               formState.errors.expectedExitRupees?.message ??
-              'Total ₹ you expect to walk away with.'
+              'Total ₹ you expect to walk away with. Leave blank for break-even.'
             }
             slotProps={{
               input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
@@ -556,15 +577,13 @@ function QuickForm({ onChange, onSubmit, submitting, submitBlocked, error }: For
             error={!!formState.errors.maxLossRupees}
             helperText={
               formState.errors.maxLossRupees?.message ??
-              'The most you are willing to lose on this trade.'
+              'Worst case you can stomach. Leave blank to assume the full capital.'
             }
             slotProps={{
               input: { startAdornment: <InputAdornment position="start">₹</InputAdornment> },
             }}
             {...register('maxLossRupees')}
           />
-
-          <Divider>Optional</Divider>
 
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
             <TextField

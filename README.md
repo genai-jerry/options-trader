@@ -158,6 +158,10 @@ boot.
 | `DB_PATH`           | no       | `./data/options-trader.sqlite`     | Path to the SQLite file. Relative paths resolve from `apps/server/`.        |
 | `KITE_API_KEY`      | optional | empty                              | Zerodha Kite Connect API key. *Optional* — can also be set in Settings → Zerodha credentials (DB takes precedence). |
 | `KITE_API_SECRET`   | optional | empty                              | Zerodha Kite Connect API secret. Server-side only; never leaves the server. |
+| `APP_ORIGIN`        | optional | `http://localhost:5173`            | Public origin where the SPA is served from. Used as the redirect target after Google login. |
+| `GOOGLE_CLIENT_ID`  | login    | empty                              | OAuth client ID from Google Cloud Console. *Required to enable login.* |
+| `GOOGLE_CLIENT_SECRET` | login | empty                              | OAuth client secret. Server-side only.                                |
+| `GOOGLE_REDIRECT_URI`  | login | empty                              | Authorized redirect URI registered in Google. Must match `APP_ORIGIN` so the session cookie lands on the SPA's origin (e.g. `http://localhost:5173/api/auth/google/callback`). |
 | `ANTHROPIC_API_KEY` | Step 10  | empty                              | Anthropic API key for the AI Advisor.                                       |
 | `AI_PROVIDER`       | no       | `anthropic`                        | `anthropic` or `openai`.                                                    |
 | `AI_MODEL`          | no       | `claude-sonnet-4-6`                | Model id passed to the provider.                                            |
@@ -176,6 +180,64 @@ These live in the SQLite `account` row, **not** in `.env`:
 | `feePercent`      | `0.05`  | Fraction of profit charged as fees on `SELF_SUSTAINING` profitable closes. |
 | `positionSizeCap` | `0.25`  | Soft cap for check C5. Set to `0` to disable the cap WARN.             |
 | `aiEnabled`       | `true`  | Master switch for all server-side advisor calls (Step 10).             |
+
+## Multi-user & Google login
+
+The app is multi-tenant. Every API call below `/api/account`, `/api/trades`,
+`/api/withdrawals`, `/api/decisions`, `/api/advisor`, `/api/zerodha`, and
+`/api/backup` is gated by an authenticated session and scoped to the
+caller's `user_id` — there is no way for one user to read another user's
+data.
+
+### Setting up Google OAuth
+
+1. Open the [Google Cloud Console](https://console.cloud.google.com), pick
+   or create a project.
+2. **APIs & Services → OAuth consent screen** → set up an "External"
+   app, fill in name + support email, add the `email`, `profile`, and
+   `openid` scopes, save.
+3. **APIs & Services → Credentials → Create Credentials → OAuth client ID**
+   → Application type **Web application**.
+4. Under **Authorized redirect URIs** add the value that matches your
+   deployment:
+
+   | Setup                                    | Authorized redirect URI                            |
+   | ---------------------------------------- | -------------------------------------------------- |
+   | Local dev (Vite on 5173)                 | `http://localhost:5173/api/auth/google/callback`   |
+   | Single-port prod / Docker (4000)         | `http://localhost:4000/api/auth/google/callback`   |
+   | Lightsail / public domain                | `https://your-domain/api/auth/google/callback`     |
+
+   In dev the Vite proxy forwards `/api/*` to the backend, so registering
+   the 5173 URI is correct (and necessary — the session cookie must be
+   set on the same origin the SPA loads from).
+
+5. Copy the client ID + secret into `apps/server/.env`:
+   ```
+   APP_ORIGIN=http://localhost:5173
+   GOOGLE_CLIENT_ID=…
+   GOOGLE_CLIENT_SECRET=…
+   GOOGLE_REDIRECT_URI=http://localhost:5173/api/auth/google/callback
+   ```
+6. Restart the server and visit the SPA. The login screen will show a
+   **Continue with Google** button.
+
+### Sessions
+
+- Session cookie name: `options_trader_sid`. httpOnly, sameSite=Lax,
+  secure in production. 30-day expiry.
+- Sessions live in the `sessions` SQLite table. Logout deletes the row
+  and clears the cookie.
+- The Vite dev server proxies `/api/*` to the backend, so cookies set by
+  the server land on the browser's view of `localhost:5173` (the SPA's
+  origin). That's why the OAuth redirect URI must point at 5173 in dev.
+
+### Existing data on upgrade
+
+When you upgrade an existing single-user database, migration `004` moves
+every pre-existing row into a placeholder user `legacy@local` (id =
+`legacy`). It will not be visible to any Google-logged-in user. To
+recover it: SQL-edit `users.google_sub` on the legacy row to your Google
+`sub`, or JSON-export from the legacy account and re-import after login.
 
 ## Running the app
 
@@ -524,8 +586,9 @@ truth on every write).
 
 | Id  | Trigger                                                                              | Action                                                                                       |
 | --- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| R1  | On close, `phase=BOOTSTRAP` and cumulative `realizedPnL ≥ 2X`                       | Move `X` from corpus to `setAside`; phase → `SELF_SUSTAINING`.                              |
-| R2  | On profitable close, `phase=SELF_SUSTAINING`                                         | `fees = gross × feePercent`; `net = gross - fees`; enqueue a `PendingWithdrawal(net/2)`.    |
+| —   | **Profit share on every profitable close** (any phase)                                | `fees = gross × feePercent`; corpus and `realizedPnL` accumulate the **net** (post-share). `feesPaid` increments. |
+| R1  | On close, `phase=BOOTSTRAP` and cumulative net `realizedPnL ≥ 2X`                    | Move `X` from corpus to `setAside`; phase → `SELF_SUSTAINING`.                              |
+| R2  | On profitable close, `phase=SELF_SUSTAINING`                                         | Additionally enqueues a `PendingWithdrawal(net/2)`.                                         |
 | R3  | On close, `corpus ≤ 0.5 X`                                                           | Phase → `LOCKED`. New entries blocked.                                                      |
 | R4  | User unlock                                                                          | Phase → previous; `lockOverrideAt` recorded.                                                |
 | R5  | User confirms a `PendingWithdrawal`                                                  | `corpus -= amount`; `cashWithdrawn += amount`. Cancel keeps the cash and marks CANCELLED.   |
@@ -555,6 +618,19 @@ for `POST /api/trades` BLOCKs, the full `DecisionRecord` for audit).
 ```
 GET  /api/health           → { status: "ok" }
 GET  /api/health/db        → { status, schemaVersion, tables: string[] }
+```
+
+All endpoints below `/api/auth/*` and `/api/health` require a valid
+session cookie — unauthenticated requests return 401.
+
+### Auth
+
+```
+GET  /api/auth/status                  → { googleConfigured: boolean }
+GET  /api/auth/me                      → { user: User }     (401 if no session)
+GET  /api/auth/google/login            302 → Google
+GET  /api/auth/google/callback?code=&state=  302 → APP_ORIGIN, sets cookie
+POST /api/auth/logout                  → 204, clears cookie
 ```
 
 ### Account

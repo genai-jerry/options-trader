@@ -11,7 +11,7 @@ import {
   type DecisionRecord,
   type NewTradeInput,
 } from '@options-trader/shared';
-import type { Repo } from '../db/repo.js';
+import type { UserRepo } from '../db/repo.js';
 import { newId, nowISO } from '../routes/_helpers.js';
 import type {
   AIProvider,
@@ -123,7 +123,7 @@ export const TOOLS: ToolDefinition[] = [
 
 // ─── Tool handler factory ─────────────────────────────────────────────
 
-export function createToolHandler(repo: Repo) {
+export function createToolHandler(repo: UserRepo) {
   return async function handler(
     name: string,
     input: Record<string, unknown>,
@@ -224,7 +224,7 @@ export interface DecideResponse {
 
 export class AdvisorService {
   constructor(
-    private repo: Repo,
+    private repo: UserRepo,
     private provider: AIProvider,
     private limiter: RateLimiter,
   ) {}

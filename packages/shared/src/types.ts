@@ -125,3 +125,12 @@ export interface AdvisorMessage {
   /** Optional tool-call payload, JSON-encoded. */
   toolPayload?: string;
 }
+
+export interface User {
+  id: string;
+  email: string;
+  name?: string;
+  picture?: string;
+  createdAt: string;
+  lastLoginAt?: string;
+}

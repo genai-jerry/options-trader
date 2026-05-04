@@ -5,7 +5,12 @@ import type {
   NewTradeInput,
   PendingWithdrawal,
   Trade,
+  User,
 } from '@options-trader/shared';
+
+export interface AuthStatus {
+  googleConfigured: boolean;
+}
 
 export interface AdvisorStatus {
   enabled: boolean;
@@ -117,6 +122,7 @@ async function request<T>(
   const init: RequestInit = {
     method,
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
   };
   if (body !== undefined) init.body = JSON.stringify(body);
 
@@ -136,6 +142,11 @@ async function request<T>(
 export { HttpError };
 
 export const api = {
+  // ── auth ─────────────────────────────────────────────────────────────
+  authStatus: () => request<AuthStatus>('GET', '/api/auth/status'),
+  me: () => request<{ user: User }>('GET', '/api/auth/me'),
+  logout: () => request<null>('POST', '/api/auth/logout'),
+
   // ── account ──────────────────────────────────────────────────────────
   getAccount: () => request<Account>('GET', '/api/account'),
   putSettings: (body: Partial<Pick<Account, 'feePercent' | 'positionSizeCap' | 'aiEnabled'>>) =>

@@ -1,6 +1,24 @@
 import { useEffect, useState } from 'react';
-import { AppBar, Box, Drawer, List, ListItemButton, ListItemText, Toolbar, Tooltip, Typography } from '@mui/material';
+import {
+  AppBar,
+  Avatar,
+  Box,
+  Drawer,
+  IconButton,
+  List,
+  ListItemButton,
+  ListItemText,
+  Menu,
+  MenuItem,
+  Toolbar,
+  Tooltip,
+  Typography,
+} from '@mui/material';
+import LogoutIcon from '@mui/icons-material/Logout';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { api } from '../api/client';
+import { useAuth } from '../auth/AuthProvider';
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', shortcut: 'd' },
@@ -16,7 +34,16 @@ const DRAWER_WIDTH = 220;
 
 export function AppShell() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const qc = useQueryClient();
   const [pending, setPending] = useState<'g' | null>(null);
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+
+  const logout = async () => {
+    await api.logout();
+    qc.clear();
+    window.location.assign('/');
+  };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -72,9 +99,49 @@ export function AppShell() {
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
         <Toolbar>
-          <Typography variant="h6" noWrap component="div">
+          <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
             Options Trader
           </Typography>
+          <Tooltip title={user.email}>
+            <IconButton
+              onClick={(e) => setAnchor(e.currentTarget)}
+              size="small"
+              sx={{ p: 0 }}
+            >
+              <Avatar
+                src={user.picture}
+                alt={user.name ?? user.email}
+                sx={{ width: 32, height: 32, bgcolor: 'primary.dark' }}
+              >
+                {(user.name ?? user.email).slice(0, 1).toUpperCase()}
+              </Avatar>
+            </IconButton>
+          </Tooltip>
+          <Menu
+            anchorEl={anchor}
+            open={Boolean(anchor)}
+            onClose={() => setAnchor(null)}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+          >
+            <Box sx={{ px: 2, py: 1 }}>
+              <Typography variant="body2" fontWeight={500}>
+                {user.name ?? '—'}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {user.email}
+              </Typography>
+            </Box>
+            <MenuItem
+              onClick={() => {
+                setAnchor(null);
+                logout();
+              }}
+            >
+              <LogoutIcon fontSize="small" sx={{ mr: 1 }} />
+              Sign out
+            </MenuItem>
+          </Menu>
         </Toolbar>
       </AppBar>
       <Drawer

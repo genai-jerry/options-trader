@@ -2,57 +2,68 @@ import { Router } from 'express';
 import { z } from 'zod';
 import type { AdvisorMessage } from '@options-trader/shared';
 import { env } from '../env.js';
-import { getDb } from '../db/index.js';
-import { createRepo } from '../db/repo.js';
+import { userRepoFor } from '../auth/middleware.js';
 import { newId, nowISO, parseBody, wrap } from './_helpers.js';
-import {
-  AdvisorService,
-  RateLimiter,
-} from '../ai/AdvisorService.js';
+import { AdvisorService, RateLimiter } from '../ai/AdvisorService.js';
 import { createAnthropicProvider } from '../ai/providers/anthropic.js';
 import type { AIProvider } from '../ai/types.js';
 
 export const advisorRouter = Router();
 
-let _service: AdvisorService | null = null;
+// Per-user rate limits (so one tenant can't starve another). Created lazily.
+const limiters = new Map<string, RateLimiter>();
+function limiterFor(userId: string): RateLimiter {
+  let l = limiters.get(userId);
+  if (!l) {
+    l = new RateLimiter(20, 500);
+    limiters.set(userId, l);
+  }
+  return l;
+}
 
-function getService(): AdvisorService | null {
-  if (_service) return _service;
+let _provider: AIProvider | null = null;
+function getProvider(): AIProvider | null {
+  if (_provider) return _provider;
   if (env.AI_PROVIDER !== 'anthropic') return null;
   if (!env.ANTHROPIC_API_KEY) return null;
-
-  const repo = createRepo(getDb());
-  const provider: AIProvider = createAnthropicProvider({
+  _provider = createAnthropicProvider({
     apiKey: env.ANTHROPIC_API_KEY,
     defaultModel: env.AI_MODEL,
   });
-  _service = new AdvisorService(repo, provider, new RateLimiter(20, 500));
-  return _service;
+  return _provider;
 }
 
-function ensureEnabled(): { ok: true; service: AdvisorService } | { ok: false; reason: string } {
-  const repo = createRepo(getDb());
+interface Guard {
+  service: AdvisorService;
+}
+
+function ensureEnabled(req: import('express').Request):
+  | { ok: true; guard: Guard }
+  | { ok: false; reason: string } {
+  const repo = userRepoFor(req);
   const account = repo.getAccount();
   if (!account.aiEnabled) {
     return { ok: false, reason: 'AI advisor is disabled in Settings.' };
   }
-  const service = getService();
-  if (!service) {
+  const provider = getProvider();
+  if (!provider) {
     return {
       ok: false,
       reason: `AI provider not configured. Set ANTHROPIC_API_KEY in apps/server/.env (provider=${env.AI_PROVIDER}).`,
     };
   }
-  return { ok: true, service };
+  return {
+    ok: true,
+    guard: { service: new AdvisorService(repo, provider, limiterFor(req.userId!)) },
+  };
 }
 
 // ─── Status ───────────────────────────────────────────────────────────
 
 advisorRouter.get(
   '/status',
-  wrap((_req, res) => {
-    const repo = createRepo(getDb());
-    const account = repo.getAccount();
+  wrap((req, res) => {
+    const account = userRepoFor(req).getAccount();
     res.json({
       enabled: account.aiEnabled,
       provider: env.AI_PROVIDER,
@@ -66,9 +77,8 @@ advisorRouter.get(
 
 advisorRouter.get(
   '/conversations',
-  wrap((_req, res) => {
-    const repo = createRepo(getDb());
-    res.json(repo.listConversations(20));
+  wrap((req, res) => {
+    res.json(userRepoFor(req).listConversations(20));
   }),
 );
 
@@ -76,8 +86,7 @@ advisorRouter.get(
   '/conversations/:id',
   wrap((req, res) => {
     const id = String(req.params.id);
-    const repo = createRepo(getDb());
-    res.json(repo.listAdvisorMessages(id));
+    res.json(userRepoFor(req).listAdvisorMessages(id));
   }),
 );
 
@@ -105,14 +114,14 @@ advisorRouter.post(
     const body = parseBody(DecideSchema, req, res);
     if (!body) return;
 
-    const guard = ensureEnabled();
+    const guard = ensureEnabled(req);
     if (!guard.ok) {
       res.status(409).json({ error: guard.reason });
       return;
     }
 
     try {
-      const out = await guard.service.decide(body);
+      const out = await guard.guard.service.decide(body);
       res.json(out);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Advisor failed.';
@@ -141,16 +150,15 @@ advisorRouter.post(
     const body = parseBody(ChatSchema, req, res);
     if (!body) return;
 
-    const guard = ensureEnabled();
+    const guard = ensureEnabled(req);
     if (!guard.ok) {
       res.status(409).json({ error: guard.reason });
       return;
     }
 
     const conversationId = body.conversationId ?? newId();
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
 
-    // Persist the latest user message.
     const lastUser = [...body.messages].reverse().find((m) => m.role === 'user');
     if (lastUser) {
       const msg: AdvisorMessage = {
@@ -163,7 +171,6 @@ advisorRouter.post(
       repo.insertAdvisorMessage(msg);
     }
 
-    // SSE setup.
     res.set({
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -177,7 +184,7 @@ advisorRouter.post(
     req.on('close', () => ac.abort());
 
     let assistantText = '';
-    await guard.service.chat({
+    await guard.guard.service.chat({
       messages: body.messages,
       signal: ac.signal,
       onEvent: (e) => {
@@ -204,14 +211,14 @@ advisorRouter.post(
 
 advisorRouter.post(
   '/portfolio-review',
-  wrap(async (_req, res) => {
-    const guard = ensureEnabled();
+  wrap(async (req, res) => {
+    const guard = ensureEnabled(req);
     if (!guard.ok) {
       res.status(409).json({ error: guard.reason });
       return;
     }
     try {
-      const review = await guard.service.portfolioReview();
+      const review = await guard.guard.service.portfolioReview();
       res.json(review);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Advisor failed.';

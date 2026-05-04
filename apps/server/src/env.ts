@@ -12,6 +12,13 @@ const EnvSchema = z.object({
   AI_MODEL: z.string().default('claude-sonnet-4-6'),
   /** Absolute path to the built web app to serve at /. Empty = API only. */
   WEB_STATIC_DIR: z.string().optional().default(''),
+  /** Public origin the browser hits — used to build the OAuth redirect URI. */
+  APP_ORIGIN: z.string().optional().default('http://localhost:5173'),
+  /** Google OAuth — required to enable login. */
+  GOOGLE_CLIENT_ID: z.string().optional().default(''),
+  GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
+  /** Where Google redirects after login. Must match what's registered in the Google console. */
+  GOOGLE_REDIRECT_URI: z.string().optional().default(''),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

@@ -1,8 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { unlock } from '@options-trader/shared';
-import { getDb } from '../db/index.js';
-import { createRepo } from '../db/repo.js';
+import { userRepoFor } from '../auth/middleware.js';
 import { nowISO, parseBody, wrap } from './_helpers.js';
 
 export const accountRouter = Router();
@@ -10,9 +9,8 @@ export const accountRouter = Router();
 // GET /api/account
 accountRouter.get(
   '/',
-  wrap((_req, res) => {
-    const repo = createRepo(getDb());
-    res.json(repo.getAccount());
+  wrap((req, res) => {
+    res.json(userRepoFor(req).getAccount());
   }),
 );
 
@@ -30,7 +28,7 @@ accountRouter.put(
   wrap((req, res) => {
     const body = parseBody(SettingsSchema, req, res);
     if (!body) return;
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     const account = repo.getAccount();
     const next = {
       ...account,
@@ -53,7 +51,7 @@ accountRouter.post(
   wrap((req, res) => {
     const body = parseBody(PrincipalSchema, req, res);
     if (!body) return;
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     if (repo.countTrades() > 0) {
       res.status(409).json({
         error: 'Principal is locked once any trade exists. Use /api/account/reset.',
@@ -64,9 +62,6 @@ accountRouter.post(
     const next = {
       ...account,
       principalX: body.principalX,
-      // First-time principal: seed the corpus to match. Subsequent edits
-      // (still pre-trade) overwrite the corpus too — it's the user's
-      // declared starting capital.
       investableCorpus: body.principalX,
       phase: 'BOOTSTRAP' as const,
     };
@@ -75,7 +70,7 @@ accountRouter.post(
   }),
 );
 
-// POST /api/account/reset — wipe everything. Confirmation token required.
+// POST /api/account/reset — wipe this user's data. Confirmation token required.
 const ResetSchema = z.object({
   confirm: z.literal('RESET'),
 });
@@ -85,7 +80,7 @@ accountRouter.post(
   wrap((req, res) => {
     const body = parseBody(ResetSchema, req, res);
     if (!body) return;
-    const repo = createRepo(getDb());
+    const repo = userRepoFor(req);
     repo.resetAll();
     res.json(repo.getAccount());
   }),
@@ -94,8 +89,8 @@ accountRouter.post(
 // POST /api/account/unlock — R4. 409 if not LOCKED.
 accountRouter.post(
   '/unlock',
-  wrap((_req, res) => {
-    const repo = createRepo(getDb());
+  wrap((req, res) => {
+    const repo = userRepoFor(req);
     const account = repo.getAccount();
     if (account.phase !== 'LOCKED') {
       res.status(409).json({ error: 'Account is not LOCKED.' });

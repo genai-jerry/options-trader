@@ -98,25 +98,31 @@ export function applyRulesOnClose(
   let queuedWithdrawal: PendingWithdrawal | undefined;
   const firedRules: ('R1' | 'R2' | 'R3')[] = [];
 
-  // Basic close: credit exit value back to the corpus, accumulate net pnl.
+  // Basic close: credit exit value back to the corpus.
   next.investableCorpus = account.investableCorpus + exitValue;
-  next.realizedPnL = account.realizedPnL + grossPnL;
 
   let fees = 0;
   let netPnL = grossPnL;
 
-  // R2 — SELF_SUSTAINING profitable close: split off a withdrawal.
-  // Phase at close-start determines whether R2 applies, so a close that
-  // triggers R1 (BOOTSTRAP -> SELF_SUSTAINING) does not also fire R2 on
-  // the same close.
-  if (isProfit && startingPhase === 'SELF_SUSTAINING') {
+  // Profit share — applied on EVERY profitable close, regardless of phase.
+  // The fee leaves the corpus and accumulates in feesPaid; realizedPnL
+  // accumulates the NET (post-share) amount, matching the spec's "cumulative
+  // net realizedPnL" wording for the 2X bootstrap goal.
+  if (isProfit) {
     fees = applyRate(grossPnL, account.feePercent);
     netPnL = grossPnL - fees;
-    const withdrawAmount = Math.floor(netPnL / 2);
-
     next.investableCorpus -= fees;
     next.feesPaid = account.feesPaid + fees;
+  }
 
+  next.realizedPnL = account.realizedPnL + netPnL;
+
+  // R2 — SELF_SUSTAINING profitable close also splits half the net into a
+  // withdrawal queue. Phase at close-start determines whether R2 applies, so
+  // a close that triggers R1 (BOOTSTRAP -> SELF_SUSTAINING) does not also
+  // fire R2 on the same close.
+  if (isProfit && startingPhase === 'SELF_SUSTAINING') {
+    const withdrawAmount = Math.floor(netPnL / 2);
     if (withdrawAmount > 0) {
       queuedWithdrawal = {
         id: opts.withdrawalId,
