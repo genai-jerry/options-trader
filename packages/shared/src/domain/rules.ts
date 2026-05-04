@@ -122,6 +122,7 @@ export function applyRulesOnClose(
         id: opts.withdrawalId,
         amount: withdrawAmount,
         fromTradeId: trade.id,
+        source: 'AUTO',
         createdAt: opts.now,
         status: 'PENDING',
       };

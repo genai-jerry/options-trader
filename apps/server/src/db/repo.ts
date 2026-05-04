@@ -97,7 +97,8 @@ function rowToTrade(row: TradeRow): Trade {
 interface WithdrawalRow {
   id: string;
   amount: number;
-  from_trade_id: string;
+  from_trade_id: string | null;
+  source: 'AUTO' | 'MANUAL';
   status: WithdrawalStatus;
   created_at: string;
   decided_at: string | null;
@@ -107,10 +108,11 @@ function rowToWithdrawal(row: WithdrawalRow): PendingWithdrawal {
   const w: PendingWithdrawal = {
     id: row.id,
     amount: row.amount,
-    fromTradeId: row.from_trade_id,
+    source: row.source,
     createdAt: row.created_at,
     status: row.status,
   };
+  if (row.from_trade_id) w.fromTradeId = row.from_trade_id;
   if (row.decided_at) w.decidedAt = row.decided_at;
   return w;
 }
@@ -240,6 +242,7 @@ export function createRepo(db: Database) {
           DELETE FROM pending_withdrawals;
           DELETE FROM trades;
           DELETE FROM zerodha_sessions;
+          UPDATE zerodha_credentials SET api_key = NULL, api_secret = NULL, updated_at = NULL WHERE id = 1;
           DELETE FROM account;
           INSERT INTO account (id) VALUES (1);
         `);
@@ -352,17 +355,32 @@ export function createRepo(db: Database) {
 
     insertWithdrawal(w: PendingWithdrawal): void {
       db.prepare(
-        `INSERT INTO pending_withdrawals (id, amount, from_trade_id, status, created_at, decided_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(w.id, w.amount, w.fromTradeId, w.status, w.createdAt, w.decidedAt ?? null);
+        `INSERT INTO pending_withdrawals (id, amount, from_trade_id, source, status, created_at, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        w.id,
+        w.amount,
+        w.fromTradeId ?? null,
+        w.source,
+        w.status,
+        w.createdAt,
+        w.decidedAt ?? null,
+      );
     },
 
     putWithdrawal(w: PendingWithdrawal): void {
       const result = db.prepare(
         `UPDATE pending_withdrawals
-            SET amount = ?, from_trade_id = ?, status = ?, decided_at = ?
+            SET amount = ?, from_trade_id = ?, source = ?, status = ?, decided_at = ?
           WHERE id = ?`,
-      ).run(w.amount, w.fromTradeId, w.status, w.decidedAt ?? null, w.id);
+      ).run(
+        w.amount,
+        w.fromTradeId ?? null,
+        w.source,
+        w.status,
+        w.decidedAt ?? null,
+        w.id,
+      );
       if (result.changes === 0) throw new Error(`putWithdrawal: ${w.id} not found`);
     },
 
@@ -458,6 +476,35 @@ export function createRepo(db: Database) {
 
     clearZerodhaSession(): void {
       db.prepare('DELETE FROM zerodha_sessions WHERE id = 1').run();
+    },
+
+    // ── zerodha credentials ────────────────────────────────────────────
+    getZerodhaCredentials(): { apiKey: string; apiSecret: string; updatedAt: string | null } | null {
+      const row = db
+        .prepare('SELECT api_key, api_secret, updated_at FROM zerodha_credentials WHERE id = 1')
+        .get() as { api_key: string | null; api_secret: string | null; updated_at: string | null } | undefined;
+      if (!row) return null;
+      if (!row.api_key || !row.api_secret) return null;
+      return { apiKey: row.api_key, apiSecret: row.api_secret, updatedAt: row.updated_at };
+    },
+
+    putZerodhaCredentials(apiKey: string, apiSecret: string, now: string): void {
+      db.prepare(
+        `INSERT INTO zerodha_credentials (id, api_key, api_secret, updated_at)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           api_key    = excluded.api_key,
+           api_secret = excluded.api_secret,
+           updated_at = excluded.updated_at`,
+      ).run(apiKey, apiSecret, now);
+    },
+
+    clearZerodhaCredentials(): void {
+      db.prepare(
+        `UPDATE zerodha_credentials
+            SET api_key = NULL, api_secret = NULL, updated_at = NULL
+          WHERE id = 1`,
+      ).run();
     },
 
     // ── introspection (used by /api/health/db) ─────────────────────────

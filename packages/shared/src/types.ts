@@ -28,11 +28,14 @@ export interface Account {
 }
 
 export type WithdrawalStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED';
+export type WithdrawalSource = 'AUTO' | 'MANUAL';
 
 export interface PendingWithdrawal {
   id: string;
   amount: number;
-  fromTradeId: string;
+  /** Set for AUTO withdrawals (R2-driven). Absent for MANUAL ones. */
+  fromTradeId?: string;
+  source: WithdrawalSource;
   createdAt: string;
   decidedAt?: string;
   status: WithdrawalStatus;

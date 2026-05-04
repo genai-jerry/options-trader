@@ -131,6 +131,41 @@ export function Dashboard() {
         )}
       </Box>
 
+      {/* Principal recovered (cumulative cashWithdrawn vs principalX) */}
+      {account.principalX !== null && account.principalX > 0 && (
+        <Card>
+          <CardContent>
+            <Stack
+              direction="row"
+              justifyContent="space-between"
+              alignItems="center"
+              sx={{ mb: 1 }}
+            >
+              <Typography variant="subtitle2" color="text.secondary">
+                Principal recovered (cash withdrawn vs principal X)
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {formatINR(account.cashWithdrawn)} / {formatINR(account.principalX)}
+              </Typography>
+            </Stack>
+            <LinearProgress
+              variant="determinate"
+              value={Math.max(
+                0,
+                Math.min(100, (account.cashWithdrawn / account.principalX) * 100),
+              )}
+              sx={{ height: 10, borderRadius: 1 }}
+              color={account.cashWithdrawn >= account.principalX ? 'success' : 'primary'}
+            />
+            {account.cashWithdrawn >= account.principalX && (
+              <Typography variant="caption" color="success.main" sx={{ display: 'block', mt: 1 }}>
+                You've taken out at least your starting capital — everything still in the corpus is house money.
+              </Typography>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Bootstrap gauge */}
       {account.phase === 'BOOTSTRAP' && bootstrapTarget !== null && (
         <Card>

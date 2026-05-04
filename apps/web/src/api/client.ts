@@ -31,10 +31,20 @@ export interface AdvisorReview {
 
 export interface ZerodhaStatus {
   configured: boolean;
+  credentialsSource: 'db' | 'env' | null;
   connected: boolean;
   userId?: string;
   userName?: string;
   loginAt?: string;
+}
+
+export interface ZerodhaCredentialsStatus {
+  configured: boolean;
+  source: 'db' | 'env' | null;
+  hasDbCreds: boolean;
+  hasEnvCreds: boolean;
+  apiKeyMasked: string | null;
+  updatedAt: string | null;
 }
 
 export interface KiteFundsSegment {
@@ -151,6 +161,12 @@ export const api = {
   // ── withdrawals ──────────────────────────────────────────────────────
   listWithdrawals: (status?: 'PENDING' | 'CONFIRMED' | 'CANCELLED') =>
     request<PendingWithdrawal[]>('GET', '/api/withdrawals', undefined, { status }),
+  manualWithdrawal: (amount: number) =>
+    request<{ withdrawal: PendingWithdrawal; account: Account }>(
+      'POST',
+      '/api/withdrawals',
+      { amount },
+    ),
   confirmWithdrawal: (id: string) =>
     request<{ withdrawal: PendingWithdrawal; account: Account }>(
       'POST',
@@ -182,6 +198,12 @@ export const api = {
 
   // ── zerodha ──────────────────────────────────────────────────────────
   zerodhaStatus: () => request<ZerodhaStatus>('GET', '/api/zerodha/status'),
+  zerodhaCredentials: () =>
+    request<ZerodhaCredentialsStatus>('GET', '/api/zerodha/credentials'),
+  zerodhaSetCredentials: (apiKey: string, apiSecret: string) =>
+    request<null>('PUT', '/api/zerodha/credentials', { apiKey, apiSecret }),
+  zerodhaDeleteCredentials: () =>
+    request<null>('DELETE', '/api/zerodha/credentials'),
   zerodhaLoginUrl: () => request<{ url: string }>('GET', '/api/zerodha/login-url'),
   zerodhaExchangeToken: (request_token: string) =>
     request<{ user: { user_id: string; user_name: string; email?: string } }>(

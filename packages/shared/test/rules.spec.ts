@@ -306,6 +306,7 @@ describe('R5: confirmWithdrawal / cancelWithdrawal', () => {
     id: 'w-1',
     amount: rupeesToPaise(9_500),
     fromTradeId: 't-1',
+    source: 'AUTO',
     createdAt: '2026-05-02T10:00:00.000Z',
     status: 'PENDING',
   };

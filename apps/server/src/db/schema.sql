@@ -57,13 +57,15 @@ CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE TABLE IF NOT EXISTS pending_withdrawals (
   id            TEXT    PRIMARY KEY,
   amount        INTEGER NOT NULL CHECK (amount >= 0),
-  from_trade_id TEXT    NOT NULL REFERENCES trades(id) ON DELETE RESTRICT,
+  from_trade_id TEXT    REFERENCES trades(id) ON DELETE RESTRICT,
+  source        TEXT    NOT NULL DEFAULT 'AUTO' CHECK (source IN ('AUTO','MANUAL')),
   status        TEXT    NOT NULL CHECK (status IN ('PENDING','CONFIRMED','CANCELLED')),
   created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   decided_at    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON pending_withdrawals(status);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_source ON pending_withdrawals(source);
 
 CREATE TABLE IF NOT EXISTS decisions (
   id              TEXT    PRIMARY KEY,
@@ -95,4 +97,11 @@ CREATE TABLE IF NOT EXISTS zerodha_sessions (
   public_token  TEXT,
   login_at      TEXT,
   expires_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS zerodha_credentials (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  api_key     TEXT,
+  api_secret  TEXT,
+  updated_at  TEXT
 );

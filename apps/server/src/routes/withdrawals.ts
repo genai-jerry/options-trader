@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { cancelWithdrawal, confirmWithdrawal } from '@options-trader/shared';
+import {
+  cancelWithdrawal,
+  confirmWithdrawal,
+  type PendingWithdrawal,
+} from '@options-trader/shared';
 import { getDb } from '../db/index.js';
 import { createRepo } from '../db/repo.js';
-import { nowISO, paramString, wrap } from './_helpers.js';
+import { newId, nowISO, paramString, parseBody, wrap } from './_helpers.js';
 
 export const withdrawalsRouter = Router();
 
@@ -18,6 +22,69 @@ withdrawalsRouter.get(
     const parsed = StatusSchema.safeParse(req.query.status);
     if (parsed.success) filter.status = parsed.data;
     res.json(repo.listWithdrawals(filter));
+  }),
+);
+
+// POST /api/withdrawals — manual cash withdrawal.
+//
+// Reduces investableCorpus by `amount` and increments cashWithdrawn in a
+// single transaction. Refuses to breach the 0.5X lock floor; the trade
+// engine's R3 still applies on the next close so this guard is just a
+// preflight.
+const ManualWithdrawSchema = z.object({
+  amount: z.number().int().positive(),
+  notes: z.string().optional(),
+});
+
+withdrawalsRouter.post(
+  '/',
+  wrap((req, res) => {
+    const body = parseBody(ManualWithdrawSchema, req, res);
+    if (!body) return;
+
+    const repo = createRepo(getDb());
+    const account = repo.getAccount();
+
+    if (account.principalX === null) {
+      res.status(409).json({ error: 'Principal X is not configured.' });
+      return;
+    }
+    if (body.amount > account.investableCorpus) {
+      res.status(409).json({
+        error: `Amount exceeds investable corpus (${account.investableCorpus} paise).`,
+      });
+      return;
+    }
+    const floor = Math.floor(account.principalX / 2);
+    if (account.investableCorpus - body.amount < floor) {
+      res.status(409).json({
+        error: `Withdrawing this would push the corpus below the 0.5X lock floor (${floor} paise).`,
+      });
+      return;
+    }
+
+    const now = nowISO();
+    const withdrawal: PendingWithdrawal = {
+      id: newId(),
+      amount: body.amount,
+      source: 'MANUAL',
+      status: 'CONFIRMED',
+      createdAt: now,
+      decidedAt: now,
+    };
+
+    const next = {
+      ...account,
+      investableCorpus: account.investableCorpus - body.amount,
+      cashWithdrawn: account.cashWithdrawn + body.amount,
+    };
+
+    repo.tx(() => {
+      repo.insertWithdrawal(withdrawal);
+      repo.putAccount(next);
+    });
+
+    res.status(201).json({ withdrawal, account: next });
   }),
 );
 

@@ -22,6 +22,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatINR, paiseToRupees, rupeesToPaise, type Account } from '@options-trader/shared';
 import {
   useAccount,
@@ -30,7 +31,7 @@ import {
   useSetPrincipal,
   useTrades,
 } from '../api/hooks';
-import { HttpError } from '../api/client';
+import { api, HttpError } from '../api/client';
 
 export function Settings() {
   const accountQ = useAccount();
@@ -50,6 +51,7 @@ export function Settings() {
 
       <PrincipalSection account={account} hasTrades={hasTrades} />
       <PreferencesSection account={account} />
+      <ZerodhaSection />
       <BackupSection />
       <ResetSection hasTrades={hasTrades} />
     </Stack>
@@ -219,6 +221,135 @@ function PreferencesSection({ account }: { account: Account }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ─── Zerodha credentials ──────────────────────────────────────────────
+
+const ZerodhaCredsSchema = z.object({
+  apiKey: z.string().trim().min(1, 'Required'),
+  apiSecret: z.string().trim().min(1, 'Required'),
+});
+type ZerodhaCredsForm = z.infer<typeof ZerodhaCredsSchema>;
+
+function ZerodhaSection() {
+  return (
+    <Card>
+      <CardContent>
+        <Typography variant="h6">Zerodha credentials</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Kite Connect API key and secret. Stored in the local SQLite file
+          (server-side only — never sent back to this browser). Saving new
+          credentials clears any active Kite session, so you'll need to
+          reconnect from the Zerodha Sync page.
+        </Typography>
+        <ZerodhaCredsForm />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ZerodhaCredsForm() {
+  const qc = useQueryClient();
+  const status = useQuery({
+    queryKey: ['zerodha', 'credentials'],
+    queryFn: api.zerodhaCredentials,
+  });
+  const save = useMutation({
+    mutationFn: ({ apiKey, apiSecret }: ZerodhaCredsForm) =>
+      api.zerodhaSetCredentials(apiKey, apiSecret),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['zerodha'] });
+    },
+  });
+  const clear = useMutation({
+    mutationFn: api.zerodhaDeleteCredentials,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['zerodha'] });
+    },
+  });
+
+  const { register, handleSubmit, formState, reset } = useForm<ZerodhaCredsForm>({
+    resolver: zodResolver(ZerodhaCredsSchema),
+    defaultValues: { apiKey: '', apiSecret: '' },
+  });
+
+  if (status.isLoading) return <CircularProgress size={20} />;
+  const s = status.data;
+
+  const onSubmit = (data: ZerodhaCredsForm) => {
+    save.mutate(data, { onSuccess: () => reset({ apiKey: '', apiSecret: '' }) });
+  };
+
+  return (
+    <Stack spacing={2} component="form" onSubmit={handleSubmit(onSubmit)}>
+      {s && (
+        <Alert
+          severity={s.configured ? 'success' : 'info'}
+          variant="outlined"
+        >
+          {s.configured ? (
+            <>
+              Configured · source: <strong>{s.source}</strong>
+              {s.apiKeyMasked && <> · key {s.apiKeyMasked}</>}
+              {s.updatedAt && <> · updated {new Date(s.updatedAt).toLocaleString()}</>}
+            </>
+          ) : (
+            'Not configured. Enter your Kite Connect API key + secret below.'
+          )}
+        </Alert>
+      )}
+
+      <TextField
+        label="API key"
+        fullWidth
+        autoComplete="off"
+        error={!!formState.errors.apiKey}
+        helperText={formState.errors.apiKey?.message}
+        {...register('apiKey')}
+      />
+      <TextField
+        label="API secret"
+        type="password"
+        fullWidth
+        autoComplete="new-password"
+        error={!!formState.errors.apiSecret}
+        helperText={formState.errors.apiSecret?.message ?? 'Stored in SQLite. Never shown again.'}
+        {...register('apiSecret')}
+      />
+
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+        <Button type="submit" variant="contained" disabled={save.isPending}>
+          {save.isPending ? 'Saving…' : 'Save credentials'}
+        </Button>
+        {s?.hasDbCreds && (
+          <Button
+            color="inherit"
+            variant="outlined"
+            disabled={clear.isPending}
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Clear stored Kite credentials? You will need to reconnect after saving new ones.',
+                )
+              ) {
+                clear.mutate();
+              }
+            }}
+          >
+            Clear stored credentials
+          </Button>
+        )}
+      </Stack>
+
+      {save.isError && (
+        <Alert severity="error">
+          {save.error instanceof HttpError ? save.error.message : 'Save failed.'}
+        </Alert>
+      )}
+      {save.isSuccess && <Alert severity="success">Saved. Reconnect from Zerodha Sync.</Alert>}
+      {clear.isSuccess && <Alert severity="success">Stored credentials cleared.</Alert>}
+    </Stack>
   );
 }
 

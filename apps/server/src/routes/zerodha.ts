@@ -8,22 +8,35 @@ import { createKiteClient, KiteError, type KiteClient } from '../broker/KiteClie
 
 export const zerodhaRouter = Router();
 
-let _client: KiteClient | null = null;
+interface ResolvedCreds {
+  apiKey: string;
+  apiSecret: string;
+  /** Where the credentials came from. */
+  source: 'db' | 'env';
+}
 
+function resolveCredentials(): ResolvedCreds | null {
+  const repo = createRepo(getDb());
+  const fromDb = repo.getZerodhaCredentials();
+  if (fromDb) return { apiKey: fromDb.apiKey, apiSecret: fromDb.apiSecret, source: 'db' };
+  if (env.KITE_API_KEY && env.KITE_API_SECRET) {
+    return { apiKey: env.KITE_API_KEY, apiSecret: env.KITE_API_SECRET, source: 'env' };
+  }
+  return null;
+}
+
+// Build a fresh client per request — credentials may have been rotated in
+// the Settings UI between calls. KiteClient is cheap to construct.
 function getClient(): KiteClient | null {
-  if (!env.KITE_API_KEY || !env.KITE_API_SECRET) return null;
-  if (_client) return _client;
-  _client = createKiteClient({
-    apiKey: env.KITE_API_KEY,
-    apiSecret: env.KITE_API_SECRET,
-  });
-  return _client;
+  const creds = resolveCredentials();
+  if (!creds) return null;
+  return createKiteClient({ apiKey: creds.apiKey, apiSecret: creds.apiSecret });
 }
 
 function notConfigured(res: Parameters<Parameters<typeof wrap>[0]>[1]): void {
   res.status(409).json({
     error:
-      'Zerodha not configured. Set KITE_API_KEY and KITE_API_SECRET in apps/server/.env.',
+      'Zerodha not configured. Set the API key and secret in Settings → Zerodha credentials, or via apps/server/.env.',
   });
 }
 
@@ -40,8 +53,10 @@ zerodhaRouter.get(
   wrap((_req, res) => {
     const repo = createRepo(getDb());
     const session = repo.getZerodhaSession();
+    const creds = resolveCredentials();
     res.json({
-      configured: Boolean(env.KITE_API_KEY && env.KITE_API_SECRET),
+      configured: Boolean(creds),
+      credentialsSource: creds?.source ?? null,
       connected: Boolean(session),
       ...(session
         ? { userId: session.userId, userName: session.userName, loginAt: session.loginAt }
@@ -49,6 +64,57 @@ zerodhaRouter.get(
     });
   }),
 );
+
+// Credentials management — never echoes the secret back.
+zerodhaRouter.get(
+  '/credentials',
+  wrap((_req, res) => {
+    const creds = resolveCredentials();
+    const repo = createRepo(getDb());
+    const dbCreds = repo.getZerodhaCredentials();
+    res.json({
+      configured: Boolean(creds),
+      source: creds?.source ?? null,
+      hasDbCreds: Boolean(dbCreds),
+      hasEnvCreds: Boolean(env.KITE_API_KEY && env.KITE_API_SECRET),
+      apiKeyMasked: creds ? maskKey(creds.apiKey) : null,
+      updatedAt: dbCreds?.updatedAt ?? null,
+    });
+  }),
+);
+
+const CredentialsSchema = z.object({
+  apiKey: z.string().min(1, 'API key is required'),
+  apiSecret: z.string().min(1, 'API secret is required'),
+});
+
+zerodhaRouter.put(
+  '/credentials',
+  wrap((req, res) => {
+    const body = parseBody(CredentialsSchema, req, res);
+    if (!body) return;
+    const repo = createRepo(getDb());
+    repo.putZerodhaCredentials(body.apiKey.trim(), body.apiSecret.trim(), nowISO());
+    // A new key invalidates any active session.
+    repo.clearZerodhaSession();
+    res.status(204).end();
+  }),
+);
+
+zerodhaRouter.delete(
+  '/credentials',
+  wrap((_req, res) => {
+    const repo = createRepo(getDb());
+    repo.clearZerodhaCredentials();
+    repo.clearZerodhaSession();
+    res.status(204).end();
+  }),
+);
+
+function maskKey(key: string): string {
+  if (key.length <= 4) return '•'.repeat(key.length);
+  return `${key.slice(0, 2)}${'•'.repeat(Math.max(0, key.length - 6))}${key.slice(-4)}`;
+}
 
 zerodhaRouter.get(
   '/login-url',

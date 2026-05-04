@@ -156,8 +156,8 @@ boot.
 | `PORT`              | no       | `4000`                             | Backend HTTP port. The Vite dev server proxies `/api` here.                 |
 | `NODE_ENV`          | no       | `development`                      | One of `development` / `production` / `test`.                               |
 | `DB_PATH`           | no       | `./data/options-trader.sqlite`     | Path to the SQLite file. Relative paths resolve from `apps/server/`.        |
-| `KITE_API_KEY`      | Step 11  | empty                              | Zerodha Kite Connect API key. Leave blank until Step 11.                    |
-| `KITE_API_SECRET`   | Step 11  | empty                              | Zerodha Kite Connect API secret. Server-side only; never leaves the server. |
+| `KITE_API_KEY`      | optional | empty                              | Zerodha Kite Connect API key. *Optional* — can also be set in Settings → Zerodha credentials (DB takes precedence). |
+| `KITE_API_SECRET`   | optional | empty                              | Zerodha Kite Connect API secret. Server-side only; never leaves the server. |
 | `ANTHROPIC_API_KEY` | Step 10  | empty                              | Anthropic API key for the AI Advisor.                                       |
 | `AI_PROVIDER`       | no       | `anthropic`                        | `anthropic` or `openai`.                                                    |
 | `AI_MODEL`          | no       | `claude-sonnet-4-6`                | Model id passed to the provider.                                            |
@@ -402,7 +402,14 @@ Verdict states:
 
 ### 4. Withdrawals
 
-Three tabs: **Pending** / **Confirmed** / **Cancelled**.
+Top action: **Withdraw cash** — manual withdrawal of any amount up to
+`corpus − 0.5 × principalX` (the lock floor). Goes straight to
+`CONFIRMED`, reduces the corpus, and adds to `cashWithdrawn` so it
+counts toward "principal recovered" on the Dashboard.
+
+Three tabs: **Pending** / **Confirmed** / **Cancelled**. Each row shows
+a `MANUAL` or `AUTO` chip so you can tell user-initiated withdrawals
+from R2-driven splits.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -575,9 +582,17 @@ POST /api/trades/:id/close                      body: { exitPrice }
 
 ```
 GET  /api/withdrawals?status=                   → PendingWithdrawal[]
+POST /api/withdrawals                           body: { amount }
+                                                → { withdrawal, account }   (manual; auto-CONFIRMED)
 POST /api/withdrawals/:id/confirm               → { withdrawal, account }   (R5)
 POST /api/withdrawals/:id/cancel                → { withdrawal, account }   (R5)
 ```
+
+`POST /api/withdrawals` is the manual cash-out path. It refuses with
+HTTP 409 if the requested amount exceeds the corpus or would push the
+corpus below the 0.5 × principalX lock floor. Auto-withdrawals (R2 from
+SELF_SUSTAINING profitable closes) keep using the existing
+confirm/cancel queue.
 
 ### Decisions
 
@@ -608,15 +623,23 @@ verdict reflects the rules-engine output. Tool traces are returned in
 ### Zerodha (Kite Connect)
 
 ```
-GET  /api/zerodha/status                        → { configured, connected, userId?, userName?, loginAt? }
-GET  /api/zerodha/login-url                     → { url }
-POST /api/zerodha/exchange-token                body: { request_token } → { user }
-GET  /api/zerodha/funds                         → KiteFunds
-GET  /api/zerodha/holdings                      → KiteHolding[]
-GET  /api/zerodha/positions                     → { net, day }
-GET  /api/zerodha/orders                        → KiteOrder[]
-POST /api/zerodha/disconnect                    → { ok: true }
+GET    /api/zerodha/status                      → { configured, credentialsSource, connected, … }
+GET    /api/zerodha/credentials                 → { configured, source, hasDbCreds, hasEnvCreds, apiKeyMasked, updatedAt }
+PUT    /api/zerodha/credentials                 body: { apiKey, apiSecret } → 204 (clears any active session)
+DELETE /api/zerodha/credentials                 → 204
+GET    /api/zerodha/login-url                   → { url }
+POST   /api/zerodha/exchange-token              body: { request_token } → { user }
+GET    /api/zerodha/funds                       → KiteFunds
+GET    /api/zerodha/holdings                    → KiteHolding[]
+GET    /api/zerodha/positions                   → { net, day }
+GET    /api/zerodha/orders                      → KiteOrder[]
+POST   /api/zerodha/disconnect                  → { ok: true }
 ```
+
+API credentials can live in the SQLite DB (set via Settings → **Zerodha
+credentials**) *or* in `apps/server/.env`. DB takes precedence. The
+secret is never returned to the browser; only a masked key like
+`ab••••••••••wxyz` is shown.
 
 ### Backup / restore
 

@@ -101,6 +101,17 @@ export function useCancelWithdrawal() {
   });
 }
 
+export function useManualWithdraw() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (amount: number) => api.manualWithdrawal(amount),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: KEYS.account });
+      qc.invalidateQueries({ queryKey: ['withdrawals'] });
+    },
+  });
+}
+
 // ── decisions ──────────────────────────────────────────────────────────
 
 export function useDecisions(limit = 25) {
