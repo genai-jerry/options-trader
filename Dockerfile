@@ -58,9 +58,11 @@ RUN groupadd --system --gid 1001 app \
  && mkdir -p /data \
  && chown -R app:app /data
 
-# Copy node_modules + source from builder.
+# Copy hoisted node_modules + source from builder. With npm workspaces,
+# every dep ends up in /app/node_modules — the per-workspace node_modules
+# directories don't exist unless a package couldn't be hoisted, which we
+# don't hit here.
 COPY --from=builder --chown=app:app /app/node_modules                  ./node_modules
-COPY --from=builder --chown=app:app /app/apps/server/node_modules      ./apps/server/node_modules
 COPY --from=builder --chown=app:app /app/apps/server/package.json      ./apps/server/package.json
 COPY --from=builder --chown=app:app /app/apps/server/src               ./apps/server/src
 COPY --from=builder --chown=app:app /app/apps/server/tsconfig.json     ./apps/server/tsconfig.json
