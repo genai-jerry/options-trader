@@ -13,6 +13,7 @@ import { decisionsRouter } from './routes/decisions.js';
 import { advisorRouter } from './routes/advisor.js';
 import { zerodhaRouter } from './routes/zerodha.js';
 import { backupRouter } from './routes/backup.js';
+import { familyRouter } from './routes/family.js';
 import { requireAuth } from './auth/middleware.js';
 
 const app = express();
@@ -31,6 +32,7 @@ app.use('/api/decisions', requireAuth, decisionsRouter);
 app.use('/api/advisor', requireAuth, advisorRouter);
 app.use('/api/zerodha', requireAuth, zerodhaRouter);
 app.use('/api/backup', requireAuth, backupRouter);
+app.use('/api/family', requireAuth, familyRouter);
 
 // ─── Optional: serve a built web app at / with SPA fallback ─────────
 if (env.WEB_STATIC_DIR) {

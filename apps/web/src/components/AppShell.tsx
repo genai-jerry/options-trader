@@ -3,6 +3,7 @@ import {
   AppBar,
   Avatar,
   Box,
+  Chip,
   Drawer,
   IconButton,
   List,
@@ -34,7 +35,7 @@ const DRAWER_WIDTH = 220;
 
 export function AppShell() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, family } = useAuth();
   const qc = useQueryClient();
   const [pending, setPending] = useState<'g' | null>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -99,9 +100,22 @@ export function AppShell() {
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
         <Toolbar>
-          <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
+          <Typography variant="h6" noWrap component="div" sx={{ mr: 2 }}>
             Options Trader
           </Typography>
+          {family.role === 'member' && (
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`Viewing ${family.ownerName ?? family.ownerEmail ?? 'family'}'s account`}
+              sx={{
+                color: 'primary.contrastText',
+                borderColor: 'primary.contrastText',
+                '& .MuiChip-label': { color: 'primary.contrastText' },
+              }}
+            />
+          )}
+          <Box sx={{ flexGrow: 1 }} />
           <Tooltip title={user.email}>
             <IconButton
               onClick={(e) => setAnchor(e.currentTarget)}

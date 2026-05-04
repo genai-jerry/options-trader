@@ -50,6 +50,32 @@ interface SessionRow {
   expires_at: string;
 }
 
+export interface FamilyMember {
+  memberEmail: string;
+  ownerUserId: string;
+  memberUserId: string | null;
+  invitedAt: string;
+  acceptedAt: string | null;
+}
+
+interface FamilyMemberRow {
+  member_email: string;
+  owner_user_id: string;
+  member_user_id: string | null;
+  invited_at: string;
+  accepted_at: string | null;
+}
+
+function rowToFamilyMember(row: FamilyMemberRow): FamilyMember {
+  return {
+    memberEmail: row.member_email,
+    ownerUserId: row.owner_user_id,
+    memberUserId: row.member_user_id,
+    invitedAt: row.invited_at,
+    acceptedAt: row.accepted_at,
+  };
+}
+
 interface AccountRow {
   user_id: string;
   principal_x: number | null;
@@ -310,6 +336,84 @@ export function createRepo(db: Database) {
       return db.prepare(`DELETE FROM sessions WHERE expires_at < ?`).run(
         new Date().toISOString(),
       ).changes;
+    },
+
+    // ── family members ─────────────────────────────────────────────────
+
+    findFamilyByMemberUserId(userId: string): FamilyMember | null {
+      const row = db
+        .prepare('SELECT * FROM family_members WHERE member_user_id = ?')
+        .get(userId) as FamilyMemberRow | undefined;
+      return row ? rowToFamilyMember(row) : null;
+    },
+
+    findFamilyByMemberEmail(email: string): FamilyMember | null {
+      const row = db
+        .prepare('SELECT * FROM family_members WHERE member_email = ?')
+        .get(email.toLowerCase()) as FamilyMemberRow | undefined;
+      return row ? rowToFamilyMember(row) : null;
+    },
+
+    listFamilyMembers(ownerUserId: string): FamilyMember[] {
+      const rows = db
+        .prepare('SELECT * FROM family_members WHERE owner_user_id = ? ORDER BY invited_at ASC')
+        .all(ownerUserId) as FamilyMemberRow[];
+      return rows.map(rowToFamilyMember);
+    },
+
+    /**
+     * Add a new family invite. Throws on:
+     *   - SqliteError (UNIQUE) if email is already in another family
+     *   - 'self-invite' if owner tries to invite their own email
+     */
+    insertFamilyMember(opts: {
+      ownerUserId: string;
+      memberEmail: string;
+      now: string;
+    }): void {
+      const owner = this.getUserById(opts.ownerUserId);
+      const email = opts.memberEmail.trim().toLowerCase();
+      if (owner && owner.email.toLowerCase() === email) {
+        throw new Error('self-invite');
+      }
+      // If a user already exists with this email, link immediately.
+      const existing = db
+        .prepare('SELECT id FROM users WHERE LOWER(email) = ?')
+        .get(email) as { id: string } | undefined;
+      const memberUserId = existing?.id ?? null;
+      const acceptedAt = existing ? opts.now : null;
+
+      db.prepare(
+        `INSERT INTO family_members (member_email, owner_user_id, member_user_id, invited_at, accepted_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(email, opts.ownerUserId, memberUserId, opts.now, acceptedAt);
+    },
+
+    /** Owner removes an invitee. */
+    deleteFamilyMember(opts: { ownerUserId: string; memberEmail: string }): boolean {
+      const result = db
+        .prepare(
+          'DELETE FROM family_members WHERE owner_user_id = ? AND member_email = ?',
+        )
+        .run(opts.ownerUserId, opts.memberEmail.trim().toLowerCase());
+      return result.changes > 0;
+    },
+
+    /** Member leaves the family they're in. */
+    leaveFamily(memberUserId: string): boolean {
+      const result = db
+        .prepare('DELETE FROM family_members WHERE member_user_id = ?')
+        .run(memberUserId);
+      return result.changes > 0;
+    },
+
+    /** Mark an invite as accepted by linking the member's user id. */
+    linkFamilyMember(opts: { memberEmail: string; memberUserId: string; now: string }): void {
+      db.prepare(
+        `UPDATE family_members
+            SET member_user_id = ?, accepted_at = COALESCE(accepted_at, ?)
+          WHERE member_email = ?`,
+      ).run(opts.memberUserId, opts.now, opts.memberEmail.toLowerCase());
     },
 
     // ── introspection ──────────────────────────────────────────────────

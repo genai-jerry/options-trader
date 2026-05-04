@@ -4,13 +4,13 @@ import { env } from '../env.js';
 import { getDb } from '../db/index.js';
 import { createRepo } from '../db/repo.js';
 import { wrap } from './_helpers.js';
+import { requireAuth } from '../auth/middleware.js';
 import {
   clearStateCookie,
   createSession,
   destroyCurrentSession,
   generateState,
   readStateCookie,
-  resolveUserId,
   setSessionCookie,
   setStateCookie,
 } from '../auth/sessions.js';
@@ -31,19 +31,33 @@ authRouter.get(
 
 authRouter.get(
   '/me',
+  requireAuth,
   wrap((req, res) => {
-    const userId = resolveUserId(req);
-    if (!userId) {
-      res.status(401).json({ error: 'Not authenticated.' });
-      return;
-    }
     const repo = createRepo(getDb());
-    const user = repo.getUserById(userId);
+    const user = repo.getUserById(req.userId!);
     if (!user) {
       res.status(401).json({ error: 'Session points to a missing user.' });
       return;
     }
-    res.json({ user });
+
+    // Family context: 'owner' = sees own data; 'member' = sees ownerUserId's data.
+    const family =
+      req.familyRole === 'member'
+        ? (() => {
+            const owner = repo.getUserById(req.dataUserId!);
+            return {
+              role: 'member' as const,
+              ownerUserId: req.dataUserId!,
+              ownerEmail: owner?.email ?? null,
+              ownerName: owner?.name ?? null,
+            };
+          })()
+        : {
+            role: 'owner' as const,
+            memberCount: repo.listFamilyMembers(req.userId!).length,
+          };
+
+    res.json({ user, family });
   }),
 );
 

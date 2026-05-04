@@ -231,6 +231,54 @@ data.
   the server land on the browser's view of `localhost:5173` (the SPA's
   origin). That's why the OAuth redirect URI must point at 5173 in dev.
 
+### Family accounts
+
+A logged-in user is the *owner* of their own data tree. They can invite
+family members by Google email; once an invited email signs in, that
+user becomes a *member* and every API request they make is scoped to
+the owner's data — same trades, same withdrawals, same dashboard. There
+is no separate "shared book" view; the member literally sees the owner's
+account.
+
+**Adding a family member.** Settings → **Family members** (visible only
+to owners) → enter an email → **Add**. The invite is recorded in the
+`family_members` table. On the member's next Google login (with that
+exact email), the auth middleware auto-links them and they see the
+owner's data on the next page load.
+
+**Constraints.**
+- A given email can be in at most one family at a time. A second owner
+  trying to invite the same email gets HTTP 409.
+- An owner can't invite their own email.
+- Members cannot invite further members — they have to leave the family
+  first (Settings → Leave family).
+- Removing a member (or the member leaving) returns them to seeing
+  their own user_id's data tree, which may be empty (or contain trades
+  they made before joining — those rows survive but are hidden while
+  they're members).
+
+**Endpoints.**
+
+```
+GET    /api/family/members                  → { role, ownerUserId, members[] }
+POST   /api/family/members                  body: { email } → { members[] }
+DELETE /api/family/members/:email           → { members[] }
+DELETE /api/family/membership               → { ok: true }   (member leaves)
+```
+
+`GET /api/auth/me` carries family context for the SPA:
+
+```
+{
+  user: User,
+  family: { role: 'owner', memberCount }                  // owner
+        | { role: 'member', ownerUserId, ownerEmail, ownerName }  // member
+}
+```
+
+The AppShell shows a "Viewing X's account" chip when the logged-in
+user is a member.
+
 ### Existing data on upgrade
 
 When you upgrade an existing single-user database, migration `004` moves

@@ -50,6 +50,7 @@ export function Settings() {
       <Typography variant="h4">Settings</Typography>
 
       <PrincipalSection account={account} hasTrades={hasTrades} />
+      <FamilySection />
       <PreferencesSection account={account} />
       <ZerodhaSection />
       <BackupSection />
@@ -218,6 +219,166 @@ function PreferencesSection({ account }: { account: Account }) {
           <Alert severity="success" sx={{ mt: 2 }}>
             Preferences saved.
           </Alert>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Family members ───────────────────────────────────────────────────
+
+function FamilySection() {
+  const qc = useQueryClient();
+  const meQ = useQuery({ queryKey: ['auth', 'me'], queryFn: api.me });
+  const listQ = useQuery({ queryKey: ['family', 'list'], queryFn: api.familyList });
+
+  const add = useMutation({
+    mutationFn: api.familyAdd,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['family'] });
+      qc.invalidateQueries({ queryKey: ['auth'] });
+    },
+  });
+  const remove = useMutation({
+    mutationFn: api.familyRemove,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['family'] });
+      qc.invalidateQueries({ queryKey: ['auth'] });
+    },
+  });
+  const leave = useMutation({
+    mutationFn: api.familyLeave,
+    onSuccess: () => {
+      // After leaving, the user goes back to their own data tree.
+      window.location.reload();
+    },
+  });
+
+  const [emailInput, setEmailInput] = useState('');
+
+  if (meQ.isLoading || listQ.isLoading) return null;
+  const family = meQ.data?.family;
+  if (!family) return null;
+
+  if (family.role === 'member') {
+    return (
+      <Card>
+        <CardContent>
+          <Typography variant="h6">Family</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            You're viewing <strong>{family.ownerName ?? family.ownerEmail}</strong>'s
+            account. All trades, withdrawals, and Zerodha data you see belong to that
+            family. Leaving the family returns you to your own (empty) account.
+          </Typography>
+          <Button
+            color="inherit"
+            variant="outlined"
+            disabled={leave.isPending}
+            onClick={() => {
+              if (window.confirm('Leave this family? You will lose access to its data.')) {
+                leave.mutate();
+              }
+            }}
+          >
+            Leave family
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Owner view.
+  const submitAdd = () => {
+    const email = emailInput.trim();
+    if (!email) return;
+    add.mutate(email, { onSuccess: () => setEmailInput('') });
+  };
+
+  const members = listQ.data?.members ?? [];
+
+  return (
+    <Card>
+      <CardContent>
+        <Typography variant="h6">Family members</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Invite family by their Google email. When they sign in, they'll see this
+          same trading book — same trades, withdrawals, dashboard. Each member can
+          place trades and pull cash, all attributed to this account.
+        </Typography>
+
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}>
+          <TextField
+            label="Family member email"
+            type="email"
+            size="small"
+            fullWidth
+            value={emailInput}
+            onChange={(e) => setEmailInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitAdd();
+              }
+            }}
+          />
+          <Button
+            variant="contained"
+            onClick={submitAdd}
+            disabled={!emailInput.trim() || add.isPending}
+          >
+            {add.isPending ? 'Adding…' : 'Add'}
+          </Button>
+        </Stack>
+
+        {add.isError && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {add.error instanceof HttpError ? add.error.message : 'Add failed.'}
+          </Alert>
+        )}
+        {remove.isError && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {remove.error instanceof HttpError ? remove.error.message : 'Remove failed.'}
+          </Alert>
+        )}
+
+        {members.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No family members yet.
+          </Typography>
+        ) : (
+          <Stack spacing={1}>
+            {members.map((m) => (
+              <Stack
+                key={m.memberEmail}
+                direction="row"
+                justifyContent="space-between"
+                alignItems="center"
+                sx={{ py: 1, borderBottom: 1, borderColor: 'divider' }}
+              >
+                <Stack spacing={0.25}>
+                  <Typography variant="body2">{m.memberEmail}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {m.acceptedAt
+                      ? `Joined ${new Date(m.acceptedAt).toLocaleString()}`
+                      : `Invited ${new Date(m.invitedAt).toLocaleString()}`}
+                  </Typography>
+                </Stack>
+                <Button
+                  size="small"
+                  color="error"
+                  variant="text"
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    if (window.confirm(`Remove ${m.memberEmail} from the family?`)) {
+                      remove.mutate(m.memberEmail);
+                    }
+                  }}
+                >
+                  Remove
+                </Button>
+              </Stack>
+            ))}
+          </Stack>
         )}
       </CardContent>
     </Card>

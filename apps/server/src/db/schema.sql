@@ -33,6 +33,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user    ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
+CREATE TABLE IF NOT EXISTS family_members (
+  member_email   TEXT    PRIMARY KEY,
+  owner_user_id  TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  member_user_id TEXT    UNIQUE   REFERENCES users(id) ON DELETE SET NULL,
+  invited_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  accepted_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_family_owner       ON family_members(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_family_member_user ON family_members(member_user_id);
+
 CREATE TABLE IF NOT EXISTS account (
   user_id           TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   principal_x       INTEGER,

@@ -12,6 +12,29 @@ export interface AuthStatus {
   googleConfigured: boolean;
 }
 
+export interface FamilyMember {
+  memberEmail: string;
+  ownerUserId: string;
+  memberUserId: string | null;
+  invitedAt: string;
+  acceptedAt: string | null;
+}
+
+export type FamilyContext =
+  | { role: 'owner'; memberCount: number }
+  | { role: 'member'; ownerUserId: string; ownerEmail: string | null; ownerName: string | null };
+
+export interface MeResponse {
+  user: User;
+  family: FamilyContext;
+}
+
+export interface FamilyListResponse {
+  role: 'owner' | 'member';
+  ownerUserId: string;
+  members: FamilyMember[];
+}
+
 export interface AdvisorStatus {
   enabled: boolean;
   provider: string;
@@ -144,8 +167,19 @@ export { HttpError };
 export const api = {
   // ── auth ─────────────────────────────────────────────────────────────
   authStatus: () => request<AuthStatus>('GET', '/api/auth/status'),
-  me: () => request<{ user: User }>('GET', '/api/auth/me'),
+  me: () => request<MeResponse>('GET', '/api/auth/me'),
   logout: () => request<null>('POST', '/api/auth/logout'),
+
+  // ── family ───────────────────────────────────────────────────────────
+  familyList: () => request<FamilyListResponse>('GET', '/api/family/members'),
+  familyAdd: (email: string) =>
+    request<{ members: FamilyMember[] }>('POST', '/api/family/members', { email }),
+  familyRemove: (email: string) =>
+    request<{ members: FamilyMember[] }>(
+      'DELETE',
+      `/api/family/members/${encodeURIComponent(email)}`,
+    ),
+  familyLeave: () => request<{ ok: boolean }>('DELETE', '/api/family/membership'),
 
   // ── account ──────────────────────────────────────────────────────────
   getAccount: () => request<Account>('GET', '/api/account'),

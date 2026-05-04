@@ -8,11 +8,12 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { Box, CircularProgress } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 import type { User } from '@options-trader/shared';
-import { api, HttpError } from '../api/client';
+import { api, HttpError, type FamilyContext } from '../api/client';
 import { Login } from './Login';
 
 interface AuthContextValue {
   user: User;
+  family: FamilyContext;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -50,6 +51,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return <Login error={err instanceof Error ? err.message : 'Auth check failed.'} />;
   }
 
-  const user = meQ.data!.user;
-  return <AuthContext.Provider value={{ user }}>{children}</AuthContext.Provider>;
+  const { user, family } = meQ.data!;
+  return <AuthContext.Provider value={{ user, family }}>{children}</AuthContext.Provider>;
 }
