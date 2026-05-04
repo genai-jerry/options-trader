@@ -151,13 +151,32 @@ async function request<T>(
 
   const res = await fetch(url.toString(), init);
   const text = await res.text();
-  const parsed = text ? (JSON.parse(text) as unknown) : null;
+
+  // Tolerate non-JSON bodies. Gateway error pages from Vercel/Fly arrive
+  // as HTML; without this, JSON.parse throws and the SPA shows
+  // "Unexpected token 'A'…" instead of a useful error.
+  let parsed: unknown = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+  }
+
   if (!res.ok) {
     const detail =
       parsed && typeof parsed === 'object' && 'error' in parsed
         ? String((parsed as { error: unknown }).error)
-        : `${method} ${path} failed (${res.status})`;
+        : text
+          ? `${method} ${path} → ${res.status}: ${text.slice(0, 200)}`
+          : `${method} ${path} → ${res.status}`;
     throw new HttpError(res.status, parsed, detail);
+  }
+  if (parsed === null && text) {
+    throw new Error(
+      `${method} ${path}: server returned non-JSON body (status ${res.status}): ${text.slice(0, 200)}`,
+    );
   }
   return parsed as T;
 }
