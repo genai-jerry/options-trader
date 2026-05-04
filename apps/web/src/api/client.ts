@@ -151,7 +151,24 @@ async function request<T>(
 
   const res = await fetch(url.toString(), init);
   const text = await res.text();
-  const parsed = text ? (JSON.parse(text) as unknown) : null;
+  let parsed: unknown = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // Non-JSON body — typically an HTML/text error page from the
+      // edge proxy (e.g. Vercel's "DNS_HOSTNAME_NOT_FOUND" when the
+      // backend is unreachable). Surface a clean status-based error
+      // instead of letting the SyntaxError bubble up.
+      throw new HttpError(
+        res.status,
+        text,
+        res.ok
+          ? `${method} ${path} returned a non-JSON response`
+          : `${method} ${path} failed (${res.status})`,
+      );
+    }
+  }
   if (!res.ok) {
     const detail =
       parsed && typeof parsed === 'object' && 'error' in parsed
