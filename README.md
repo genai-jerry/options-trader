@@ -35,9 +35,10 @@ to avoid float drift; only the view layer formats to `₹`.
 13. [Testing, type-checking, formatting](#testing-type-checking-formatting)
 14. [Resetting / backups](#resetting--backups)
 15. [Docker](#docker)
-16. [Deploying to Amazon Lightsail](#deploying-to-amazon-lightsail)
-17. [Keyboard shortcuts](#keyboard-shortcuts)
-18. [Troubleshooting](#troubleshooting)
+16. [Deploying to Vercel + Fly.io](#deploying-to-vercel--flyio) *(recommended)*
+17. [Deploying to Amazon Lightsail](#deploying-to-amazon-lightsail)
+18. [Keyboard shortcuts](#keyboard-shortcuts)
+19. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -877,6 +878,156 @@ Container env (override via `docker compose` env vars or an `.env` file):
 Health check: `GET /api/health` — used by the container's
 `HEALTHCHECK` directive. The compose service marks itself `unhealthy`
 after three consecutive failures.
+
+## Deploying to Vercel + Fly.io
+
+The recommended hosted deployment for personal use. Frontend lives on
+Vercel's CDN; backend (Express + SQLite + persistent volume) runs on
+Fly.io. A Vercel rewrite proxies `/api/*` to Fly so the SPA and the API
+share one origin — session cookies, OAuth, and SSE streaming all "just
+work" without CORS.
+
+```
+            ┌────────────────────┐
+            │ your-app.vercel.app│   static SPA (Vercel CDN)
+            └─────────┬──────────┘
+                      │ /api/* (Vercel rewrite)
+                      ▼
+       ┌─────────────────────────────┐
+       │ your-fly-app.fly.dev        │   Express + tsx
+       │   /data/options-trader.sqlite│   ← 1 GB Fly volume
+       └─────────────────────────────┘
+```
+
+**Free-tier reality check.** Vercel Hobby is genuinely free for this
+scale. Fly.io moved away from a "perpetual free tier" in mid-2024 — for
+a single-user app with `auto_stop_machines = "stop"` (already set in
+`fly.toml`) you typically pay $0–2/month, billed against pay-as-you-go.
+The first machine-second a day pulls you out of the auto-stopped state.
+
+### Prerequisites
+
+- A Fly.io account (`fly auth signup`, install the `flyctl` CLI).
+- A Vercel account, GitHub repo connected.
+- Google OAuth client (see [Setting up Google OAuth](#setting-up-google-oauth)).
+- (Optional) Anthropic + Zerodha credentials.
+
+### Step 1 — pick your Fly app name
+
+Fly app names are global. Edit `fly.toml`:
+
+```diff
+- app = "options-trader"
++ app = "<your-unique-name>"
+```
+
+Note the name — your Fly URL becomes `https://<your-unique-name>.fly.dev`.
+
+### Step 2 — create the persistent volume
+
+```bash
+fly volumes create options_trader_data --size 1 --region bom
+```
+
+(`bom` = Mumbai. Pick a region close to you and to NSE if you'll use the
+Zerodha integration. List with `fly platform regions`.)
+
+### Step 3 — point Vercel's rewrite at your Fly app
+
+Edit `vercel.json`:
+
+```diff
+-      "destination": "https://YOUR-FLY-APP.fly.dev/api/:path*"
++      "destination": "https://<your-unique-name>.fly.dev/api/:path*"
+```
+
+### Step 4 — deploy the frontend to Vercel
+
+Easiest path is the dashboard:
+
+1. **New Project** → import the GitHub repo.
+2. Framework preset: **Other**. Vercel reads `vercel.json` for the rest.
+3. Deploy. You'll get `https://<your-app>.vercel.app`.
+
+Alternatively, with the CLI: `vercel --prod`.
+
+The build runs `npm install && npm run build:web`, outputs `apps/web/dist`,
+and serves it as static. The rewrite forwards `/api/*` to Fly.
+
+### Step 5 — register the Vercel URL in Google OAuth
+
+In Google Cloud Console → Credentials → your OAuth client:
+
+| Field                       | Value                                                       |
+| --------------------------- | ----------------------------------------------------------- |
+| Authorized JavaScript origins | `https://<your-app>.vercel.app`                           |
+| Authorized redirect URIs    | `https://<your-app>.vercel.app/api/auth/google/callback`    |
+
+You can keep the dev URIs in the same client — Google allows multiple.
+
+### Step 6 — set Fly secrets and deploy
+
+Set everything the server needs as Fly secrets:
+
+```bash
+fly secrets set \
+  APP_ORIGIN=https://<your-app>.vercel.app \
+  GOOGLE_CLIENT_ID=<paste from Google> \
+  GOOGLE_CLIENT_SECRET=<paste from Google> \
+  GOOGLE_REDIRECT_URI=https://<your-app>.vercel.app/api/auth/google/callback \
+  ANTHROPIC_API_KEY=<optional> \
+  KITE_API_KEY=<optional> \
+  KITE_API_SECRET=<optional>
+```
+
+Deploy:
+
+```bash
+fly deploy
+```
+
+Fly builds the Docker image, mounts the volume at `/data`, and brings the
+machine up. Watch logs with `fly logs`.
+
+### Step 7 — first login
+
+Visit `https://<your-app>.vercel.app` and click **Continue with Google**.
+The OAuth flow lands you back on the SPA with a session cookie scoped to
+the Vercel domain. You're in.
+
+### Day-to-day operations
+
+| Task                        | Command                                                                                |
+| --------------------------- | -------------------------------------------------------------------------------------- |
+| Deploy backend changes      | `fly deploy`                                                                           |
+| Deploy frontend changes     | Push to your default branch — Vercel auto-deploys.                                    |
+| Tail backend logs           | `fly logs`                                                                             |
+| SSH into the machine        | `fly ssh console`                                                                      |
+| Backup the SQLite file      | `fly ssh sftp get /data/options-trader.sqlite ./backup-$(date +%F).sqlite`             |
+| Restore                     | `fly ssh sftp put ./backup.sqlite /data/options-trader.sqlite` then `fly machine restart` |
+| Rotate a secret             | `fly secrets set KEY=…` (auto-restarts the machine)                                    |
+| Wake a stopped machine      | Just hit the URL — `auto_start_machines = true` brings it up.                          |
+
+### Custom domain (optional)
+
+- **Vercel side**: add the domain in the project's **Domains** panel; follow
+  the DNS-record instructions.
+- **Update `APP_ORIGIN`, `GOOGLE_REDIRECT_URI`** to the new domain.
+- **Update Google OAuth** authorized origins/redirect URIs.
+
+You don't need to put the custom domain on Fly — Vercel is the public
+face; Fly stays on `*.fly.dev`.
+
+### Troubleshooting
+
+- **Cookies not sticking after Google login.** Check that `APP_ORIGIN`
+  exactly matches the Vercel URL (https, no trailing slash) and the OAuth
+  redirect URI matches what's registered in Google.
+- **502 from Vercel on `/api/*`.** Fly machine is starting up
+  (`auto_start_machines`). Refresh after ~5–10 seconds.
+- **`/api/health` fine but `/api/auth/me` 401.** Cookie didn't make it
+  back. Make sure you're hitting the Vercel URL, not the Fly URL
+  directly — the cookie is set on the Vercel origin.
 
 ## Deploying to Amazon Lightsail
 

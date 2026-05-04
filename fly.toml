@@ -1,0 +1,56 @@
+# Fly.io app definition. Drives `fly deploy` from the repo root.
+#
+# What this defines:
+#   - one shared-cpu-1x / 256MB machine in BOM (Mumbai — closest to NSE)
+#   - a 1 GB persistent volume mounted at /data so the SQLite file survives
+#     restarts and redeploys
+#   - HTTPS-only public service on port 4000
+#   - /api/health health check
+#   - auto_stop=stop + auto_start=true so the machine spins down when idle
+#     (a personal trading book makes few requests; this keeps cost minimal).
+#     First request after idle has a ~5–10s cold start; subsequent requests
+#     hit the warm machine.
+#
+# Required setup before first deploy:
+#   1. Replace `app = "options-trader"` below with your own unique app name
+#      (Fly app names are global). Or run `fly launch` and let it pick one.
+#   2. Create the volume: `fly volumes create options_trader_data --size 1 --region bom`
+#   3. Set the secrets — see README §Deploying to Vercel + Fly.io.
+
+app = "options-trader"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret environment. Real secrets (API keys, OAuth client secret)
+# go in `fly secrets set …`, not here.
+[env]
+  NODE_ENV       = "production"
+  PORT           = "4000"
+  DB_PATH        = "/data/options-trader.sqlite"
+  WEB_STATIC_DIR = "/app/apps/web/dist"
+  AI_PROVIDER    = "anthropic"
+  AI_MODEL       = "claude-sonnet-4-6"
+
+[[mounts]]
+  source      = "options_trader_data"
+  destination = "/data"
+
+[http_service]
+  internal_port       = 4000
+  force_https         = true
+  auto_stop_machines  = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval     = "30s"
+    method       = "GET"
+    timeout      = "5s"
+    path         = "/api/health"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "256mb"
