@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Vite
+.vite/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+apps/server/.env
+
+# Local SQLite databases
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+apps/server/data/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local runtime (pid files + dev logs from scripts/start.sh)
+.run/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+!.vscode/extensions.json
+
+# Test/coverage
+coverage/

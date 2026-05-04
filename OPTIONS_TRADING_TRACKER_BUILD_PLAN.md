@@ -11,7 +11,7 @@ Read alongside `OPTIONS_TRADING_TRACKER_SPEC.md` (design) and
 
 ---
 
-## Step 1 — Monorepo scaffold `[x]`
+## Step 1 — Monorepo scaffold `[x]` *(rebuilt)*
 
 - npm workspaces: `apps/web`, `apps/server`, `packages/shared`.
 - Root: shared `tsconfig.base.json`, `.prettierrc.json`, `.editorconfig`,
@@ -26,12 +26,11 @@ Read alongside `OPTIONS_TRADING_TRACKER_SPEC.md` (design) and
   PendingWithdrawal, NewTradeInput, DecisionRecord, AccountSnapshot, etc.).
 - `docs/SPEC.md` — canonical design doc copied into the repo.
 
-**Status.** Built locally during the planning session as commit `ef0fe88` on
-branch `main` in `~/options-trader`. May or may not yet be on
-`github.com/genai-jerry/options-trader` depending on whether the force-push
-recovery has been completed (see CONTEXT.md).
+**Status.** Repo was deleted and re-created. Step 1 has been rebuilt on
+`claude/review-docs-build-plan-4mHxf` together with Step 2 (per user
+direction to land both in one branch).
 
-## Step 2 — Persistence: SQLite schema + migrations `[ ]`
+## Step 2 — Persistence: SQLite schema + migrations `[x]`
 
 - `apps/server/src/db/schema.sql` — tables: `account`, `trades`,
   `pending_withdrawals`, `decisions`, `advisor_messages`,
@@ -44,7 +43,11 @@ recovery has been completed (see CONTEXT.md).
 **Acceptance.** Backend boots, applies migrations, exposes
 `/api/health/db` showing schema version and table list.
 
-## Step 3 — Domain rules engine `[ ]` *(foundation; do this carefully)*
+**Status.** Done. `apps/server/src/db/schema.sql`, the migration runner,
+`repo.ts`, and `/api/health/db` ship in this branch. Verified locally:
+`schemaVersion: 1` and all six tables present.
+
+## Step 3 — Domain rules engine `[x]`
 
 - `packages/shared/src/domain/money.ts` — paise helpers, `formatINR`.
 - `packages/shared/src/domain/rules.ts`:
@@ -61,7 +64,21 @@ recovery has been completed (see CONTEXT.md).
 
 **Acceptance.** Test suite passes with full branch coverage on `rules.ts`.
 
-## Step 4 — REST endpoints + frontend stores `[ ]`
+**Status.** Done. `packages/shared/src/domain/{money,rules}.ts` and
+`packages/shared/test/rules.spec.ts` ship in this branch. 29 tests pass,
+covering R1–R5, C1–C6, and the worked sequences in spec §3.
+
+**Implementation note (spec inconsistency).** The spec's worked example
+for R2 says `corpus = 200,000 - 80,000 + 100,000 - 9,500 = 210,500`,
+which double-counts the queued half against R5 ("investableCorpus -=
+amount" on confirm). The rule text is unambiguous — "the withdrawn half
+stays in the corpus until the user confirms it (R5)" — so the engine
+implements: on a SELF_SUSTAINING profitable close, fees are debited from
+the corpus, the queued half is *not* deducted, and R5 confirm is what
+finally moves cash out. Tests assert this consistent model (corpus =
+₹219,000 pre-confirm, ₹209,500 post-confirm).
+
+## Step 4 — REST endpoints + frontend stores `[x]`
 
 Server endpoints:
 - `GET    /api/account`
@@ -82,7 +99,16 @@ Frontend: react-query hooks per endpoint. Zustand for transient UI only.
 **Acceptance.** Curl-able backend; web app shows live data; closing a trade
 in the API updates account state correctly per the rules engine.
 
-## Step 5 — Settings page `[ ]`
+**Status.** Done. All endpoints implemented under
+`apps/server/src/routes/{account,trades,withdrawals}.ts` with zod-parsed
+bodies, server-side `evaluateDecision` running C1–C6 (BLOCK responses
+return 409 with the full DecisionRecord), and `applyRulesOnClose` driving
+trade closes inside a single SQLite transaction. Web hooks live in
+`apps/web/src/api/{client.ts,hooks.ts}`; Dashboard renders live account
+tiles. Verified via curl: bootstrap → 2X trigger → SELF_SUSTAINING split
+→ confirmed withdrawal flows match the rules-engine tests numerically.
+
+## Step 5 — Settings page `[x]`
 
 - Set `principalX` (one-time gate; if any trade exists, hide and show
   "Reset everything" instead).
@@ -92,6 +118,16 @@ in the API updates account state correctly per the rules engine.
 
 **Acceptance.** A user can complete first-time setup end-to-end starting
 from an empty database.
+
+**Status.** Done. `apps/web/src/pages/Settings.tsx` has four sections:
+Principal X (rupee input → paise on submit; disables once any trade
+exists, with a contextual message), Preferences (fee% / position-size
+cap as percentages, AI advisor toggle), and Reset Everything (typed
+"RESET" confirmation dialog). Two outlined cards stub out AI provider /
+Zerodha credentials with notes pointing to Steps 10 and 11 — those
+sections are owned by those steps. Verified the first-time setup loop
+end-to-end: empty DB → set X → save prefs → open trade → principal
+locks (409) → reset wipes everything.
 
 ## Step 6 — New Trade / Decision Helper `[ ]`
 

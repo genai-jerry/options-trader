@@ -1,0 +1,33 @@
+# Production compose file shipped to the Lightsail VM by
+# .github/workflows/deploy-lightsail.yml. The image is pulled from GHCR;
+# nothing is built on the VM. The deploy step writes a sibling .env with
+# IMAGE_TAG, ANTHROPIC_API_KEY, KITE_API_*, etc.
+
+services:
+  app:
+    image: ${IMAGE}
+    container_name: options-trader
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-4000}:4000"
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DB_PATH: /data/options-trader.sqlite
+      WEB_STATIC_DIR: /app/apps/web/dist
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      AI_PROVIDER: "${AI_PROVIDER:-anthropic}"
+      AI_MODEL: "${AI_MODEL:-claude-sonnet-4-6}"
+      KITE_API_KEY: "${KITE_API_KEY:-}"
+      KITE_API_SECRET: "${KITE_API_SECRET:-}"
+    volumes:
+      - options-trader-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  options-trader-data:

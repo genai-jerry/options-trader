@@ -1,0 +1,135 @@
+name: Deploy to Lightsail
+
+# Build the Docker image, push to GHCR, then SSH into the Lightsail
+# instance and pull + restart the compose stack.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   LIGHTSAIL_HOST         e.g. 1.2.3.4 or static-ip.lightsail.aws.com
+#   LIGHTSAIL_USER         e.g. ubuntu
+#   LIGHTSAIL_SSH_KEY      private SSH key (matches the public key on the VM)
+#   LIGHTSAIL_SSH_PORT     optional, defaults to 22
+#   ANTHROPIC_API_KEY      optional — passed into the container env
+#   KITE_API_KEY           optional
+#   KITE_API_SECRET        optional
+#
+# Required repository variables (optional, with defaults):
+#   AI_MODEL               defaults to claude-sonnet-4-6
+#   AI_PROVIDER            defaults to anthropic
+#   HOST_PORT              host port the container binds to (default 4000)
+#
+# The Lightsail VM must already have docker + docker-compose plugin installed
+# and a deploy directory at ~/options-trader containing docker-compose.yml.
+# The first-time bootstrap script lives at scripts/lightsail-bootstrap.sh.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy compose file to Lightsail
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
+          source: "docker-compose.prod.yml"
+          target: "/home/${{ secrets.LIGHTSAIL_USER }}/options-trader/"
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
+          envs: GHCR_USER,GHCR_TOKEN,IMAGE,ANTHROPIC_API_KEY,KITE_API_KEY,KITE_API_SECRET,AI_MODEL,AI_PROVIDER,HOST_PORT
+          script: |
+            set -euo pipefail
+            cd ~/options-trader
+
+            # Authenticate to GHCR — the GitHub Actions bot can't reach the
+            # VM's docker daemon directly, so we re-login here.
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            # Write the .env file the compose stack reads.
+            umask 077
+            cat > .env <<EOF
+            IMAGE=$IMAGE
+            ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+            KITE_API_KEY=$KITE_API_KEY
+            KITE_API_SECRET=$KITE_API_SECRET
+            AI_MODEL=$AI_MODEL
+            AI_PROVIDER=$AI_PROVIDER
+            HOST_PORT=$HOST_PORT
+            EOF
+
+            # Use the pre-built image from GHCR via docker-compose.prod.yml.
+            mv -f docker-compose.prod.yml docker-compose.yml
+
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
+            docker compose ps
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
+          KITE_API_SECRET: ${{ secrets.KITE_API_SECRET }}
+          AI_MODEL: ${{ vars.AI_MODEL || 'claude-sonnet-4-6' }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER || 'anthropic' }}
+          HOST_PORT: ${{ vars.HOST_PORT || '4000' }}
