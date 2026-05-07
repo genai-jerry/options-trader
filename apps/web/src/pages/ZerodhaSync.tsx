@@ -21,11 +21,11 @@ import { Link as RouterLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   api,
+  type BrokerTrade,
   type KiteFundsSegment,
   type KiteHolding,
   type KiteOrder,
   type KitePosition,
-  type KiteTrade,
 } from '../api/client';
 
 const Z_KEY = ['zerodha'] as const;
@@ -438,16 +438,10 @@ interface DayAggregate {
   symbols: DaySymbolAggregate[];
 }
 
-function tradeDate(t: KiteTrade): string {
-  const ts = t.fill_timestamp ?? t.exchange_timestamp ?? t.order_timestamp ?? '';
-  // Kite timestamps are "YYYY-MM-DD HH:mm:ss" in IST. The date prefix is enough.
-  return ts.slice(0, 10) || 'unknown';
-}
-
-function aggregateTrades(trades: KiteTrade[]): DayAggregate[] {
+function aggregateBrokerTrades(trades: BrokerTrade[]): DayAggregate[] {
   const byDay = new Map<string, Map<string, DaySymbolAggregate>>();
   for (const t of trades) {
-    const date = tradeDate(t);
+    const date = t.tradeDate || 'unknown';
     const symKey = `${t.exchange}:${t.tradingsymbol}`;
     let dayMap = byDay.get(date);
     if (!dayMap) {
@@ -467,8 +461,10 @@ function aggregateTrades(trades: KiteTrade[]): DayAggregate[] {
       };
       dayMap.set(symKey, agg);
     }
-    const value = t.quantity * t.average_price;
-    if (t.transaction_type === 'BUY') {
+    // Stored prices are paise; UI works in rupees for human-readable formatting.
+    const priceRupees = t.averagePricePaise / 100;
+    const value = t.quantity * priceRupees;
+    if (t.transactionType === 'BUY') {
       agg.buyQty += t.quantity;
       agg.buyValue += value;
     } else {
@@ -505,7 +501,6 @@ function aggregateTrades(trades: KiteTrade[]): DayAggregate[] {
     }
     days.push(day);
   }
-  // Most recent day first.
   days.sort((a, b) => b.date.localeCompare(a.date));
   return days;
 }
@@ -516,24 +511,80 @@ function fmtINR(n: number): string {
 }
 
 function TradesView() {
-  const q = useQuery({ queryKey: [...Z_KEY, 'trades'], queryFn: api.zerodhaTrades });
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: [...Z_KEY, 'trades-history'],
+    queryFn: () => api.zerodhaTradesHistory(),
+  });
+  const sync = useMutation({
+    mutationFn: api.zerodhaTradesSync,
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...Z_KEY, 'trades-history'] }),
+  });
+
   if (q.isLoading) return <CircularProgress />;
   if (q.isError) return <Alert severity="error">Failed to load trades.</Alert>;
-  const trades = q.data ?? [];
 
-  if (trades.length === 0) {
-    return (
-      <Stack spacing={2}>
-        <Alert severity="info">
-          No trades reported by Kite for today. Kite's <code>/trades</code> API only
-          exposes the current trading day's fills — historical trades come from
-          downloadable Console reports.
-        </Alert>
+  const data = q.data ?? { trades: [], sync: null };
+  const trades = data.trades;
+  const syncState = data.sync;
+
+  const sessionExpired = syncState?.lastError?.toLowerCase().includes('token') ?? false;
+
+  return (
+    <Stack spacing={2}>
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        spacing={1}
+      >
+        <Typography variant="caption" color="text.secondary">
+          {syncState?.lastSuccessAt
+            ? `Last synced: ${new Date(syncState.lastSuccessAt).toLocaleString('en-IN')}`
+            : 'Not synced yet — runs daily at 18:00 IST.'}
+        </Typography>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => sync.mutate()}
+          disabled={sync.isPending}
+          startIcon={<RefreshIcon />}
+        >
+          {sync.isPending ? 'Syncing…' : 'Sync now'}
+        </Button>
       </Stack>
-    );
-  }
 
-  const days = aggregateTrades(trades);
+      {sync.isError && (
+        <Alert severity="error">
+          {sync.error instanceof Error ? sync.error.message : 'Sync failed.'}
+        </Alert>
+      )}
+
+      {syncState?.lastError && !sync.isPending && (
+        <Alert severity={sessionExpired ? 'warning' : 'error'}>
+          Last sync failed: {syncState.lastError}.
+          {sessionExpired
+            ? ' Reconnect Kite (top of this page) to resume daily syncs.'
+            : ''}
+        </Alert>
+      )}
+
+      {trades.length === 0 ? (
+        <Alert severity="info">
+          No trades synced yet. Kite's <code>/trades</code> API only exposes
+          today's fills, so history accumulates one day at a time. Click{' '}
+          <strong>Sync now</strong> to capture today after market hours, or wait
+          for the 18:00 IST scheduled run.
+        </Alert>
+      ) : (
+        <TradesViewContent trades={trades} />
+      )}
+    </Stack>
+  );
+}
+
+function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
+  const days = aggregateBrokerTrades(trades);
   const totals = days.reduce(
     (acc, d) => ({
       buyQty: acc.buyQty + d.buyQty,
@@ -545,18 +596,19 @@ function TradesView() {
     { buyQty: 0, buyValue: 0, sellQty: 0, sellValue: 0, realisedPnL: 0 },
   );
 
-  const tradeCols: GridColDef<KiteTrade>[] = [
+  const tradeCols: GridColDef<BrokerTrade>[] = [
     {
-      field: 'fill_timestamp',
+      field: 'fillTimestamp',
       headerName: 'Time',
       width: 170,
       valueGetter: (_v, row) =>
-        row.fill_timestamp ?? row.exchange_timestamp ?? row.order_timestamp ?? '',
+        row.fillTimestamp ?? row.exchangeTimestamp ?? row.orderTimestamp ?? '',
     },
+    { field: 'tradeDate', headerName: 'Date', width: 110 },
     { field: 'tradingsymbol', headerName: 'Symbol', flex: 1, minWidth: 140 },
     { field: 'exchange', headerName: 'Exch', width: 80 },
     {
-      field: 'transaction_type',
+      field: 'transactionType',
       headerName: 'Side',
       width: 80,
       renderCell: ({ value }) => (
@@ -571,16 +623,16 @@ function TradesView() {
     { field: 'product', headerName: 'Product', width: 100 },
     { field: 'quantity', headerName: 'Qty', width: 80 },
     {
-      field: 'average_price',
+      field: 'averagePricePaise',
       headerName: 'Price',
       width: 110,
-      valueFormatter: (v) => Number(v).toFixed(2),
+      valueFormatter: (v) => (Number(v) / 100).toFixed(2),
     },
     {
       field: 'value',
       headerName: 'Value',
       width: 130,
-      valueGetter: (_v, row) => row.quantity * row.average_price,
+      valueGetter: (_v, row) => (row.quantity * row.averagePricePaise) / 100,
       valueFormatter: (v) => fmtINR(Number(v)),
     },
   ];
@@ -726,10 +778,10 @@ function TradesView() {
 
       <Box sx={{ height: { xs: 360, sm: 480 }, width: '100%', overflowX: 'auto' }}>
         <DataGrid
-          rows={trades.map((r) => ({ id: r.trade_id, ...r }))}
+          rows={trades.map((r) => ({ id: r.tradeId, ...r }))}
           columns={tradeCols}
           density="compact"
-          initialState={{ sorting: { sortModel: [{ field: 'fill_timestamp', sort: 'desc' }] } }}
+          initialState={{ sorting: { sortModel: [{ field: 'fillTimestamp', sort: 'desc' }] } }}
         />
       </Box>
 
