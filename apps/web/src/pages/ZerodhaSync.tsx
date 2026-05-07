@@ -285,7 +285,7 @@ function PortfolioTabs() {
         <Box sx={{ mt: 2 }}>
           {tab === 'positions' && <PositionsGrid />}
           {tab === 'holdings' && <HoldingsGrid />}
-          {tab === 'orders' && <OrdersGrid />}
+          {tab === 'orders' && <OrderbookView />}
           {tab === 'trades' && <TradesView />}
         </Box>
       </CardContent>
@@ -390,11 +390,108 @@ function HoldingsGrid() {
   );
 }
 
-function OrdersGrid() {
-  const q = useQuery({ queryKey: [...Z_KEY, 'orders'], queryFn: api.zerodhaOrders });
-  if (q.isLoading) return <CircularProgress />;
-  if (q.isError) return <Alert severity="error">Failed to load orderbook.</Alert>;
-  const rows = q.data ?? [];
+// Per-symbol aggregate of today's COMPLETE orders. Open quantity (one-sided)
+// doesn't contribute to realised P&L — it's an unrealised position handled by
+// the /positions endpoint.
+interface OrderbookSymbolAggregate {
+  symbol: string;
+  exchange: string;
+  buyQty: number;
+  buyValue: number;
+  sellQty: number;
+  sellValue: number;
+}
+
+interface OrderbookSummary {
+  bought: number;
+  sold: number;
+  realisedPnL: number;
+  unrealisedPnL: number;
+  bySymbol: OrderbookSymbolAggregate[];
+}
+
+function computeOrderbookSummary(
+  orders: KiteOrder[],
+  positions: KitePosition[],
+): OrderbookSummary {
+  const bySym = new Map<string, OrderbookSymbolAggregate>();
+  for (const o of orders) {
+    if (o.status !== 'COMPLETE' || o.filled_quantity <= 0) continue;
+    const key = `${o.exchange}:${o.tradingsymbol}`;
+    let agg = bySym.get(key);
+    if (!agg) {
+      agg = {
+        symbol: o.tradingsymbol,
+        exchange: o.exchange,
+        buyQty: 0,
+        buyValue: 0,
+        sellQty: 0,
+        sellValue: 0,
+      };
+      bySym.set(key, agg);
+    }
+    const value = o.filled_quantity * o.average_price;
+    if (o.transaction_type === 'BUY') {
+      agg.buyQty += o.filled_quantity;
+      agg.buyValue += value;
+    } else if (o.transaction_type === 'SELL') {
+      agg.sellQty += o.filled_quantity;
+      agg.sellValue += value;
+    }
+  }
+
+  let bought = 0;
+  let sold = 0;
+  let realised = 0;
+  for (const s of bySym.values()) {
+    bought += s.buyValue;
+    sold += s.sellValue;
+    const matched = Math.min(s.buyQty, s.sellQty);
+    if (matched > 0 && s.buyQty > 0 && s.sellQty > 0) {
+      const avgBuy = s.buyValue / s.buyQty;
+      const avgSell = s.sellValue / s.sellQty;
+      realised += matched * (avgSell - avgBuy);
+    }
+  }
+
+  // Kite's `pnl` field on a day-position already reflects M2M for the day
+  // (including realised + unrealised). To isolate unrealised we'd need
+  // last_price × open_qty − cost_basis. With only what /positions exposes,
+  // the cleanest unrealised proxy is `pnl − realised_from_orders`.
+  const dayPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
+  const unrealised = dayPnl - realised;
+
+  const bySymbol = [...bySym.values()].sort((a, b) =>
+    a.symbol.localeCompare(b.symbol),
+  );
+
+  return { bought, sold, realisedPnL: realised, unrealisedPnL: unrealised, bySymbol };
+}
+
+function OrderbookView() {
+  const qc = useQueryClient();
+  const ordersQ = useQuery({
+    queryKey: [...Z_KEY, 'orders'],
+    queryFn: api.zerodhaOrders,
+  });
+  const positionsQ = useQuery({
+    queryKey: [...Z_KEY, 'positions'],
+    queryFn: api.zerodhaPositions,
+  });
+
+  const recompute = (): void => {
+    void qc.invalidateQueries({ queryKey: [...Z_KEY, 'orders'] });
+    void qc.invalidateQueries({ queryKey: [...Z_KEY, 'positions'] });
+  };
+
+  if (ordersQ.isLoading) return <CircularProgress />;
+  if (ordersQ.isError) return <Alert severity="error">Failed to load orderbook.</Alert>;
+
+  const orders = ordersQ.data ?? [];
+  const positions = positionsQ.data?.day ?? [];
+  const summary = computeOrderbookSummary(orders, positions);
+  const recomputing = ordersQ.isFetching || positionsQ.isFetching;
+
   const cols: GridColDef<KiteOrder>[] = [
     { field: 'order_timestamp', headerName: 'Time', width: 170 },
     { field: 'tradingsymbol', headerName: 'Symbol', flex: 1 },
@@ -411,10 +508,130 @@ function OrdersGrid() {
       valueFormatter: (v) => Number(v).toFixed(2),
     },
   ];
+
   return (
-    <Box sx={{ height: { xs: 360, sm: 420 }, width: '100%', overflowX: 'auto' }}>
-      <DataGrid rows={rows.map((r) => ({ id: r.order_id, ...r }))} columns={cols} />
-    </Box>
+    <Stack spacing={2}>
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        spacing={1}
+      >
+        <Typography variant="subtitle1">Day summary</Typography>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={recompute}
+          disabled={recomputing}
+          startIcon={<RefreshIcon />}
+        >
+          {recomputing ? 'Recalculating…' : 'Recalculate'}
+        </Button>
+      </Stack>
+
+      {positionsQ.isError && (
+        <Alert severity="warning">
+          Couldn't load positions — unrealised P&L is shown as ₹0.
+        </Alert>
+      )}
+
+      <Box
+        display="grid"
+        gridTemplateColumns={{ xs: '1fr 1fr', sm: 'repeat(4, 1fr)' }}
+        gap={2}
+      >
+        <SummaryTile label="Bought" primary={fmtINR(summary.bought)} secondary="Filled BUY orders" />
+        <SummaryTile label="Sold" primary={fmtINR(summary.sold)} secondary="Filled SELL orders" />
+        <SummaryTile
+          label="Realised P&L"
+          primary={fmtINR(summary.realisedPnL)}
+          primaryColor={summary.realisedPnL >= 0 ? 'success.main' : 'error.main'}
+          secondary="Matched intraday legs"
+        />
+        <SummaryTile
+          label="Unrealised P&L"
+          primary={fmtINR(summary.unrealisedPnL)}
+          primaryColor={summary.unrealisedPnL >= 0 ? 'success.main' : 'error.main'}
+          secondary="Open positions × LTP"
+        />
+      </Box>
+
+      {summary.bySymbol.length > 0 && (
+        <Box sx={{ overflowX: 'auto' }}>
+          <Box
+            component="table"
+            sx={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              fontSize: 14,
+              '& th, & td': {
+                textAlign: 'right',
+                padding: '6px 10px',
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+              },
+              '& th:first-of-type, & td:first-of-type': { textAlign: 'left' },
+              '& th': { fontWeight: 600, color: 'text.secondary' },
+            }}
+          >
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Buy qty</th>
+                <th>Avg buy</th>
+                <th>Sell qty</th>
+                <th>Avg sell</th>
+                <th>Realised P&L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.bySymbol.map((s) => {
+                const matched = Math.min(s.buyQty, s.sellQty);
+                const avgBuy = s.buyQty > 0 ? s.buyValue / s.buyQty : 0;
+                const avgSell = s.sellQty > 0 ? s.sellValue / s.sellQty : 0;
+                const pnl =
+                  matched > 0 && s.buyQty > 0 && s.sellQty > 0
+                    ? matched * (avgSell - avgBuy)
+                    : 0;
+                return (
+                  <tr key={`${s.exchange}:${s.symbol}`}>
+                    <td>
+                      {s.symbol}{' '}
+                      <Typography component="span" variant="caption" color="text.secondary">
+                        {s.exchange}
+                      </Typography>
+                    </td>
+                    <td>{s.buyQty || '—'}</td>
+                    <td>{s.buyQty > 0 ? avgBuy.toFixed(2) : '—'}</td>
+                    <td>{s.sellQty || '—'}</td>
+                    <td>{s.sellQty > 0 ? avgSell.toFixed(2) : '—'}</td>
+                    <td>
+                      <Box
+                        component="span"
+                        sx={{
+                          color:
+                            pnl === 0
+                              ? 'text.secondary'
+                              : pnl > 0
+                                ? 'success.main'
+                                : 'error.main',
+                        }}
+                      >
+                        {matched > 0 ? fmtINR(pnl) : '—'}
+                      </Box>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </Box>
+        </Box>
+      )}
+
+      <Box sx={{ height: { xs: 360, sm: 420 }, width: '100%', overflowX: 'auto' }}>
+        <DataGrid rows={orders.map((r) => ({ id: r.order_id, ...r }))} columns={cols} />
+      </Box>
+    </Stack>
   );
 }
 
