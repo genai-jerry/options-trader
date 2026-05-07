@@ -21,6 +21,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   api,
+  type BrokerTrade,
   type KiteFundsSegment,
   type KiteHolding,
   type KiteOrder,
@@ -269,7 +270,9 @@ function SegmentTile({ label, segment }: { label: string; segment: KiteFundsSegm
 }
 
 function PortfolioTabs() {
-  const [tab, setTab] = useState<'positions' | 'holdings' | 'orders'>('positions');
+  const [tab, setTab] = useState<'positions' | 'holdings' | 'orders' | 'trades'>(
+    'positions',
+  );
   return (
     <Card>
       <CardContent>
@@ -277,11 +280,13 @@ function PortfolioTabs() {
           <Tab value="positions" label="Positions" />
           <Tab value="holdings" label="Holdings" />
           <Tab value="orders" label="Orderbook" />
+          <Tab value="trades" label="Trades" />
         </Tabs>
         <Box sx={{ mt: 2 }}>
           {tab === 'positions' && <PositionsGrid />}
           {tab === 'holdings' && <HoldingsGrid />}
           {tab === 'orders' && <OrdersGrid />}
+          {tab === 'trades' && <TradesView />}
         </Box>
       </CardContent>
     </Card>
@@ -409,6 +414,417 @@ function OrdersGrid() {
   return (
     <Box sx={{ height: { xs: 360, sm: 420 }, width: '100%', overflowX: 'auto' }}>
       <DataGrid rows={rows.map((r) => ({ id: r.order_id, ...r }))} columns={cols} />
+    </Box>
+  );
+}
+
+interface DaySymbolAggregate {
+  date: string;
+  symbol: string;
+  exchange: string;
+  buyQty: number;
+  buyValue: number;
+  sellQty: number;
+  sellValue: number;
+}
+
+interface DayAggregate {
+  date: string;
+  buyQty: number;
+  buyValue: number;
+  sellQty: number;
+  sellValue: number;
+  realisedPnL: number;
+  symbols: DaySymbolAggregate[];
+}
+
+function aggregateBrokerTrades(trades: BrokerTrade[]): DayAggregate[] {
+  const byDay = new Map<string, Map<string, DaySymbolAggregate>>();
+  for (const t of trades) {
+    const date = t.tradeDate || 'unknown';
+    const symKey = `${t.exchange}:${t.tradingsymbol}`;
+    let dayMap = byDay.get(date);
+    if (!dayMap) {
+      dayMap = new Map();
+      byDay.set(date, dayMap);
+    }
+    let agg = dayMap.get(symKey);
+    if (!agg) {
+      agg = {
+        date,
+        symbol: t.tradingsymbol,
+        exchange: t.exchange,
+        buyQty: 0,
+        buyValue: 0,
+        sellQty: 0,
+        sellValue: 0,
+      };
+      dayMap.set(symKey, agg);
+    }
+    // Stored prices are paise; UI works in rupees for human-readable formatting.
+    const priceRupees = t.averagePricePaise / 100;
+    const value = t.quantity * priceRupees;
+    if (t.transactionType === 'BUY') {
+      agg.buyQty += t.quantity;
+      agg.buyValue += value;
+    } else {
+      agg.sellQty += t.quantity;
+      agg.sellValue += value;
+    }
+  }
+
+  const days: DayAggregate[] = [];
+  for (const [date, dayMap] of byDay) {
+    const symbols = [...dayMap.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
+    const day: DayAggregate = {
+      date,
+      buyQty: 0,
+      buyValue: 0,
+      sellQty: 0,
+      sellValue: 0,
+      realisedPnL: 0,
+      symbols,
+    };
+    for (const s of symbols) {
+      day.buyQty += s.buyQty;
+      day.buyValue += s.buyValue;
+      day.sellQty += s.sellQty;
+      day.sellValue += s.sellValue;
+      // Intraday realised P&L per symbol: matched leg × (avg sell − avg buy).
+      // Open quantity (one-sided) doesn't contribute — that's an unrealised position.
+      const matched = Math.min(s.buyQty, s.sellQty);
+      if (matched > 0 && s.buyQty > 0 && s.sellQty > 0) {
+        const avgBuy = s.buyValue / s.buyQty;
+        const avgSell = s.sellValue / s.sellQty;
+        day.realisedPnL += matched * (avgSell - avgBuy);
+      }
+    }
+    days.push(day);
+  }
+  days.sort((a, b) => b.date.localeCompare(a.date));
+  return days;
+}
+
+function fmtINR(n: number): string {
+  const sign = n < 0 ? '-' : '';
+  return `${sign}₹${Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+}
+
+function TradesView() {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: [...Z_KEY, 'trades-history'],
+    queryFn: () => api.zerodhaTradesHistory(),
+  });
+  const sync = useMutation({
+    mutationFn: api.zerodhaTradesSync,
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...Z_KEY, 'trades-history'] }),
+  });
+
+  if (q.isLoading) return <CircularProgress />;
+  if (q.isError) return <Alert severity="error">Failed to load trades.</Alert>;
+
+  const data = q.data ?? { trades: [], sync: null };
+  const trades = data.trades;
+  const syncState = data.sync;
+
+  const sessionExpired = syncState?.lastError?.toLowerCase().includes('token') ?? false;
+
+  return (
+    <Stack spacing={2}>
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        spacing={1}
+      >
+        <Typography variant="caption" color="text.secondary">
+          {syncState?.lastSuccessAt
+            ? `Last synced: ${new Date(syncState.lastSuccessAt).toLocaleString('en-IN')}`
+            : 'Not synced yet — runs daily at 18:00 IST.'}
+        </Typography>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => sync.mutate()}
+          disabled={sync.isPending}
+          startIcon={<RefreshIcon />}
+        >
+          {sync.isPending ? 'Syncing…' : 'Sync now'}
+        </Button>
+      </Stack>
+
+      {sync.isError && (
+        <Alert severity="error">
+          {sync.error instanceof Error ? sync.error.message : 'Sync failed.'}
+        </Alert>
+      )}
+
+      {syncState?.lastError && !sync.isPending && (
+        <Alert severity={sessionExpired ? 'warning' : 'error'}>
+          Last sync failed: {syncState.lastError}.
+          {sessionExpired
+            ? ' Reconnect Kite (top of this page) to resume daily syncs.'
+            : ''}
+        </Alert>
+      )}
+
+      {trades.length === 0 ? (
+        <Alert severity="info">
+          No trades synced yet. Kite's <code>/trades</code> API only exposes
+          today's fills, so history accumulates one day at a time. Click{' '}
+          <strong>Sync now</strong> to capture today after market hours, or wait
+          for the 18:00 IST scheduled run.
+        </Alert>
+      ) : (
+        <TradesViewContent trades={trades} />
+      )}
+    </Stack>
+  );
+}
+
+function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
+  const days = aggregateBrokerTrades(trades);
+  const totals = days.reduce(
+    (acc, d) => ({
+      buyQty: acc.buyQty + d.buyQty,
+      buyValue: acc.buyValue + d.buyValue,
+      sellQty: acc.sellQty + d.sellQty,
+      sellValue: acc.sellValue + d.sellValue,
+      realisedPnL: acc.realisedPnL + d.realisedPnL,
+    }),
+    { buyQty: 0, buyValue: 0, sellQty: 0, sellValue: 0, realisedPnL: 0 },
+  );
+
+  const tradeCols: GridColDef<BrokerTrade>[] = [
+    {
+      field: 'fillTimestamp',
+      headerName: 'Time',
+      width: 170,
+      valueGetter: (_v, row) =>
+        row.fillTimestamp ?? row.exchangeTimestamp ?? row.orderTimestamp ?? '',
+    },
+    { field: 'tradeDate', headerName: 'Date', width: 110 },
+    { field: 'tradingsymbol', headerName: 'Symbol', flex: 1, minWidth: 140 },
+    { field: 'exchange', headerName: 'Exch', width: 80 },
+    {
+      field: 'transactionType',
+      headerName: 'Side',
+      width: 80,
+      renderCell: ({ value }) => (
+        <Chip
+          size="small"
+          label={value as string}
+          color={value === 'BUY' ? 'success' : 'error'}
+          variant="outlined"
+        />
+      ),
+    },
+    { field: 'product', headerName: 'Product', width: 100 },
+    { field: 'quantity', headerName: 'Qty', width: 80 },
+    {
+      field: 'averagePricePaise',
+      headerName: 'Price',
+      width: 110,
+      valueFormatter: (v) => (Number(v) / 100).toFixed(2),
+    },
+    {
+      field: 'value',
+      headerName: 'Value',
+      width: 130,
+      valueGetter: (_v, row) => (row.quantity * row.averagePricePaise) / 100,
+      valueFormatter: (v) => fmtINR(Number(v)),
+    },
+  ];
+
+  return (
+    <Stack spacing={2}>
+      <Box
+        display="grid"
+        gridTemplateColumns={{ xs: '1fr 1fr', sm: 'repeat(4, 1fr)' }}
+        gap={2}
+      >
+        <SummaryTile
+          label="Buys"
+          primary={`${totals.buyQty.toLocaleString('en-IN')} qty`}
+          secondary={fmtINR(totals.buyValue)}
+        />
+        <SummaryTile
+          label="Sells"
+          primary={`${totals.sellQty.toLocaleString('en-IN')} qty`}
+          secondary={fmtINR(totals.sellValue)}
+        />
+        <SummaryTile
+          label="Net flow"
+          primary={fmtINR(totals.sellValue - totals.buyValue)}
+          secondary="Sells − Buys"
+        />
+        <SummaryTile
+          label="Realised P&L"
+          primary={fmtINR(totals.realisedPnL)}
+          primaryColor={totals.realisedPnL >= 0 ? 'success.main' : 'error.main'}
+          secondary="Matched intraday legs"
+        />
+      </Box>
+
+      {days.map((day) => (
+        <Card variant="outlined" key={day.date}>
+          <CardContent>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              justifyContent="space-between"
+              alignItems={{ xs: 'flex-start', sm: 'center' }}
+              spacing={1}
+              sx={{ mb: 1.5 }}
+            >
+              <Typography variant="subtitle1">{day.date}</Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap">
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color="success"
+                  label={`Buy ${day.buyQty} · ${fmtINR(day.buyValue)}`}
+                />
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color="error"
+                  label={`Sell ${day.sellQty} · ${fmtINR(day.sellValue)}`}
+                />
+                <Chip
+                  size="small"
+                  color={day.realisedPnL >= 0 ? 'success' : 'error'}
+                  label={`Realised ${fmtINR(day.realisedPnL)}`}
+                />
+              </Stack>
+            </Stack>
+
+            <Box sx={{ overflowX: 'auto', mb: 2 }}>
+              <Box
+                component="table"
+                sx={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: 14,
+                  '& th, & td': {
+                    textAlign: 'right',
+                    padding: '6px 10px',
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                  },
+                  '& th:first-of-type, & td:first-of-type': { textAlign: 'left' },
+                  '& th': { fontWeight: 600, color: 'text.secondary' },
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Buy qty</th>
+                    <th>Avg buy</th>
+                    <th>Sell qty</th>
+                    <th>Avg sell</th>
+                    <th>Realised P&L</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {day.symbols.map((s) => {
+                    const matched = Math.min(s.buyQty, s.sellQty);
+                    const avgBuy = s.buyQty > 0 ? s.buyValue / s.buyQty : 0;
+                    const avgSell = s.sellQty > 0 ? s.sellValue / s.sellQty : 0;
+                    const pnl =
+                      matched > 0 && s.buyQty > 0 && s.sellQty > 0
+                        ? matched * (avgSell - avgBuy)
+                        : 0;
+                    return (
+                      <tr key={`${s.exchange}:${s.symbol}`}>
+                        <td>
+                          {s.symbol}{' '}
+                          <Typography
+                            component="span"
+                            variant="caption"
+                            color="text.secondary"
+                          >
+                            {s.exchange}
+                          </Typography>
+                        </td>
+                        <td>{s.buyQty || '—'}</td>
+                        <td>{s.buyQty > 0 ? avgBuy.toFixed(2) : '—'}</td>
+                        <td>{s.sellQty || '—'}</td>
+                        <td>{s.sellQty > 0 ? avgSell.toFixed(2) : '—'}</td>
+                        <td>
+                          <Box
+                            component="span"
+                            sx={{
+                              color:
+                                pnl === 0
+                                  ? 'text.secondary'
+                                  : pnl > 0
+                                    ? 'success.main'
+                                    : 'error.main',
+                            }}
+                          >
+                            {matched > 0 ? fmtINR(pnl) : '—'}
+                          </Box>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </Box>
+            </Box>
+          </CardContent>
+        </Card>
+      ))}
+
+      <Box sx={{ height: { xs: 360, sm: 480 }, width: '100%', overflowX: 'auto' }}>
+        <DataGrid
+          rows={trades.map((r) => ({ id: r.tradeId, ...r }))}
+          columns={tradeCols}
+          density="compact"
+          initialState={{ sorting: { sortModel: [{ field: 'fillTimestamp', sort: 'desc' }] } }}
+        />
+      </Box>
+
+      <Typography variant="caption" color="text.secondary">
+        Realised P&L is computed from matched intraday buy/sell legs only — open
+        quantity is excluded. For positions opened earlier and closed today (BTST,
+        swing exits), the Positions tab's day P&L is the more accurate figure.
+      </Typography>
+    </Stack>
+  );
+}
+
+function SummaryTile({
+  label,
+  primary,
+  secondary,
+  primaryColor,
+}: {
+  label: string;
+  primary: string;
+  secondary?: string;
+  primaryColor?: string;
+}) {
+  return (
+    <Box
+      sx={{
+        p: 1.5,
+        border: '1px solid',
+        borderColor: 'divider',
+        borderRadius: 1,
+      }}
+    >
+      <Typography variant="overline" color="text.secondary">
+        {label}
+      </Typography>
+      <Typography variant="h6" sx={{ color: primaryColor ?? 'text.primary' }}>
+        {primary}
+      </Typography>
+      {secondary && (
+        <Typography variant="caption" color="text.secondary">
+          {secondary}
+        </Typography>
+      )}
     </Box>
   );
 }

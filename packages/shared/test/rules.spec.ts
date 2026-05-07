@@ -359,27 +359,17 @@ const newTrade = (overrides: Partial<NewTradeInput> = {}): NewTradeInput => ({
   lotSize: 1,
   qty: 1,
   entryPrice: rupeesToPaise(10_000),
-  expectedExit: rupeesToPaise(13_000),
-  maxAcceptableLoss: rupeesToPaise(1_000),
   ...overrides,
 });
 
 const D_OPTS = { id: 'd-1', decidedAt: NOW };
 
 describe('computeDecisionInputs', () => {
-  it('computes capital, reward, and reward/risk', () => {
+  it('computes capital required from entry × qty × lotSize', () => {
     const c = computeDecisionInputs(
-      newTrade({
-        entryPrice: rupeesToPaise(100),
-        expectedExit: rupeesToPaise(150),
-        qty: 2,
-        lotSize: 50,
-        maxAcceptableLoss: rupeesToPaise(1_000),
-      }),
+      newTrade({ entryPrice: rupeesToPaise(100), qty: 2, lotSize: 50 }),
     );
     expect(c.capitalRequired).toBe(rupeesToPaise(10_000));
-    expect(c.expectedReward).toBe(rupeesToPaise(5_000));
-    expect(c.rewardRiskRatio).toBe(5);
   });
 });
 
@@ -387,12 +377,7 @@ describe('evaluateDecision', () => {
   it('GO when all checks pass in BOOTSTRAP', () => {
     const acc = bootstrapAccount();
     const snapshot = accountToSnapshot(acc);
-    const input = newTrade({
-      entryPrice: rupeesToPaise(10_000),
-      expectedExit: rupeesToPaise(13_000),
-      maxAcceptableLoss: rupeesToPaise(1_000),
-    });
-    const d = evaluateDecision(input, snapshot, [], D_OPTS);
+    const d = evaluateDecision(newTrade({ entryPrice: rupeesToPaise(10_000) }), snapshot, [], D_OPTS);
     expect(d.verdict).toBe('GO');
     expect(d.checks.every((c) => c.status === 'OK')).toBe(true);
   });
@@ -414,63 +399,6 @@ describe('evaluateDecision', () => {
     );
     expect(d.verdict).toBe('BLOCK');
     expect(d.checks.find((c) => c.id === 'C2')?.status).toBe('BLOCK');
-  });
-
-  it('C3 BLOCKs when worst-case loss breaches the lock floor', () => {
-    const acc = bootstrapAccount({ investableCorpus: rupeesToPaise(60_000) });
-    const d = evaluateDecision(
-      newTrade({
-        entryPrice: rupeesToPaise(20_000),
-        expectedExit: rupeesToPaise(40_000),
-        maxAcceptableLoss: rupeesToPaise(15_000), // 60k - 15k = 45k < 50k floor
-      }),
-      accountToSnapshot(acc),
-      [],
-      D_OPTS,
-    );
-    expect(d.verdict).toBe('BLOCK');
-    expect(d.checks.find((c) => c.id === 'C3')?.status).toBe('BLOCK');
-  });
-
-  it('C3 BLOCKs when principalX is null', () => {
-    const acc = bootstrapAccount({ principalX: null });
-    const d = evaluateDecision(newTrade(), accountToSnapshot(acc), [], D_OPTS);
-    expect(d.checks.find((c) => c.id === 'C3')?.status).toBe('BLOCK');
-  });
-
-  it('C4 WARNs in BOOTSTRAP when reward/risk < 2', () => {
-    const acc = bootstrapAccount();
-    const d = evaluateDecision(
-      newTrade({
-        entryPrice: rupeesToPaise(10_000),
-        expectedExit: rupeesToPaise(11_000),
-        maxAcceptableLoss: rupeesToPaise(1_000), // ratio = 1
-      }),
-      accountToSnapshot(acc),
-      [],
-      D_OPTS,
-    );
-    expect(d.verdict).toBe('WARN');
-    expect(d.checks.find((c) => c.id === 'C4')?.status).toBe('WARN');
-  });
-
-  it('C4 does not WARN outside BOOTSTRAP', () => {
-    const acc = bootstrapAccount({
-      phase: 'SELF_SUSTAINING',
-      setAside: X_PAISE,
-      investableCorpus: rupeesToPaise(200_000),
-    });
-    const d = evaluateDecision(
-      newTrade({
-        entryPrice: rupeesToPaise(10_000),
-        expectedExit: rupeesToPaise(11_000),
-        maxAcceptableLoss: rupeesToPaise(1_000),
-      }),
-      accountToSnapshot(acc),
-      [],
-      D_OPTS,
-    );
-    expect(d.checks.find((c) => c.id === 'C4')?.status).toBe('OK');
   });
 
   it('C5 WARNs when capital exceeds the position-size cap, OK when cap = 0', () => {

@@ -19,6 +19,15 @@ const EnvSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
   /** Where Google redirects after login. Must match what's registered in the Google console. */
   GOOGLE_REDIRECT_URI: z.string().optional().default(''),
+  /** Daily Zerodha trade sync schedule (IST). Default: 18:00 every day. */
+  ZERODHA_SYNC_CRON: z.string().default('0 18 * * *'),
+  /** Set to 'false' to disable the scheduled sync (manual /trades/sync still works). */
+  ZERODHA_SYNC_ENABLED: z
+    .preprocess(
+      (v) => (typeof v === 'string' ? v.toLowerCase() !== 'false' : true),
+      z.boolean(),
+    )
+    .default(true),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

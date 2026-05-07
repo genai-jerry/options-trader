@@ -120,6 +120,51 @@ export interface KiteOrder {
   order_timestamp: string;
 }
 
+export interface KiteTrade {
+  trade_id: string;
+  order_id: string;
+  tradingsymbol: string;
+  exchange: string;
+  transaction_type: 'BUY' | 'SELL';
+  product: string;
+  average_price: number;
+  quantity: number;
+  fill_timestamp?: string;
+  exchange_timestamp?: string;
+  order_timestamp?: string;
+}
+
+/** A single Kite fill, persisted in broker_trades. averagePricePaise is integer paise. */
+export interface BrokerTrade {
+  tradeId: string;
+  orderId: string;
+  exchangeOrderId: string | null;
+  tradingsymbol: string;
+  exchange: string;
+  instrumentToken: number | null;
+  transactionType: 'BUY' | 'SELL';
+  product: string | null;
+  quantity: number;
+  averagePricePaise: number;
+  fillTimestamp: string | null;
+  exchangeTimestamp: string | null;
+  orderTimestamp: string | null;
+  tradeDate: string;
+  syncedAt: string;
+}
+
+export interface BrokerTradeSync {
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  lastError: string | null;
+  fillsTotal: number;
+}
+
+export interface BrokerTradeHistory {
+  trades: BrokerTrade[];
+  sync: BrokerTradeSync | null;
+}
+
 class HttpError extends Error {
   status: number;
   body: unknown;
@@ -282,6 +327,14 @@ export const api = {
   zerodhaPositions: () =>
     request<{ net: KitePosition[]; day: KitePosition[] }>('GET', '/api/zerodha/positions'),
   zerodhaOrders: () => request<KiteOrder[]>('GET', '/api/zerodha/orders'),
+  zerodhaTrades: () => request<KiteTrade[]>('GET', '/api/zerodha/trades'),
+  zerodhaTradesHistory: (range?: { from?: string; to?: string }) =>
+    request<BrokerTradeHistory>('GET', '/api/zerodha/trades/history', undefined, range),
+  zerodhaTradesSync: () =>
+    request<{ ok: true; fetched: number; upserted: number; sync: BrokerTradeSync }>(
+      'POST',
+      '/api/zerodha/trades/sync',
+    ),
   zerodhaDisconnect: () => request<{ ok: boolean }>('POST', '/api/zerodha/disconnect'),
 
   // ── health ───────────────────────────────────────────────────────────

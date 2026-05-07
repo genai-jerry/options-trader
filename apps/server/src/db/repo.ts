@@ -416,6 +416,17 @@ export function createRepo(db: Database) {
       ).run(opts.memberUserId, opts.now, opts.memberEmail.toLowerCase());
     },
 
+    // ── broker sync fan-out ────────────────────────────────────────────
+    /** Every user with a stored Kite access token — the daily sync iterates this list. */
+    listUserIdsWithKiteSession(): string[] {
+      const rows = db
+        .prepare(
+          `SELECT user_id FROM zerodha_sessions WHERE access_token IS NOT NULL AND access_token != ''`,
+        )
+        .all() as { user_id: string }[];
+      return rows.map((r) => r.user_id);
+    },
+
     // ── introspection ──────────────────────────────────────────────────
     listTables(): string[] {
       const rows = db
@@ -778,7 +789,213 @@ export function createUserRepo(db: Database, userId: string) {
           WHERE user_id = ?`,
       ).run(userId);
     },
+
+    // ── broker trades (Kite fills, snapshotted daily) ──────────────────
+    upsertBrokerTrades(rows: BrokerTradeUpsertRow[], syncedAt: string): number {
+      if (rows.length === 0) return 0;
+      const stmt = db.prepare(
+        `INSERT INTO broker_trades (
+           user_id, trade_id, order_id, exchange_order_id, tradingsymbol, exchange,
+           instrument_token, transaction_type, product, quantity, average_price_paise,
+           fill_timestamp, exchange_timestamp, order_timestamp, trade_date, synced_at
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, trade_id) DO UPDATE SET
+           order_id            = excluded.order_id,
+           exchange_order_id   = excluded.exchange_order_id,
+           tradingsymbol       = excluded.tradingsymbol,
+           exchange            = excluded.exchange,
+           instrument_token    = excluded.instrument_token,
+           transaction_type    = excluded.transaction_type,
+           product             = excluded.product,
+           quantity            = excluded.quantity,
+           average_price_paise = excluded.average_price_paise,
+           fill_timestamp      = excluded.fill_timestamp,
+           exchange_timestamp  = excluded.exchange_timestamp,
+           order_timestamp     = excluded.order_timestamp,
+           trade_date          = excluded.trade_date,
+           synced_at           = excluded.synced_at`,
+      );
+      let inserted = 0;
+      const tx = db.transaction((batch: BrokerTradeUpsertRow[]) => {
+        for (const r of batch) {
+          const result = stmt.run(
+            userId,
+            r.tradeId,
+            r.orderId,
+            r.exchangeOrderId ?? null,
+            r.tradingsymbol,
+            r.exchange,
+            r.instrumentToken ?? null,
+            r.transactionType,
+            r.product ?? null,
+            r.quantity,
+            r.averagePricePaise,
+            r.fillTimestamp ?? null,
+            r.exchangeTimestamp ?? null,
+            r.orderTimestamp ?? null,
+            r.tradeDate,
+            syncedAt,
+          );
+          if (result.changes > 0) inserted += 1;
+        }
+      });
+      tx(rows);
+      return inserted;
+    },
+
+    listBrokerTrades(filter: { fromDate?: string; toDate?: string } = {}): BrokerTrade[] {
+      const where: string[] = ['user_id = ?'];
+      const args: (string | number)[] = [userId];
+      if (filter.fromDate) {
+        where.push('trade_date >= ?');
+        args.push(filter.fromDate);
+      }
+      if (filter.toDate) {
+        where.push('trade_date <= ?');
+        args.push(filter.toDate);
+      }
+      const rows = db
+        .prepare(
+          `SELECT * FROM broker_trades
+            WHERE ${where.join(' AND ')}
+            ORDER BY COALESCE(fill_timestamp, exchange_timestamp, order_timestamp) DESC`,
+        )
+        .all(...args) as BrokerTradeRow[];
+      return rows.map(rowToBrokerTrade);
+    },
+
+    getBrokerTradeSync(): BrokerTradeSync | null {
+      const row = db
+        .prepare('SELECT * FROM broker_trade_syncs WHERE user_id = ?')
+        .get(userId) as BrokerTradeSyncRow | undefined;
+      return row ? rowToBrokerTradeSync(row) : null;
+    },
+
+    recordBrokerTradeSyncSuccess(at: string, fillsTotal: number): void {
+      db.prepare(
+        `INSERT INTO broker_trade_syncs (user_id, last_success_at, last_attempt_at, last_error, fills_total)
+         VALUES (?, ?, ?, NULL, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           last_success_at = excluded.last_success_at,
+           last_attempt_at = excluded.last_attempt_at,
+           last_error      = NULL,
+           fills_total     = excluded.fills_total`,
+      ).run(userId, at, at, fillsTotal);
+    },
+
+    recordBrokerTradeSyncFailure(at: string, error: string): void {
+      db.prepare(
+        `INSERT INTO broker_trade_syncs (user_id, last_attempt_at, last_error, fills_total)
+         VALUES (?, ?, ?, 0)
+         ON CONFLICT(user_id) DO UPDATE SET
+           last_attempt_at = excluded.last_attempt_at,
+           last_error      = excluded.last_error`,
+      ).run(userId, at, error);
+    },
   };
 }
 
 export type UserRepo = ReturnType<typeof createUserRepo>;
+
+// ─── broker_trades types ──────────────────────────────────────────────
+
+export interface BrokerTradeUpsertRow {
+  tradeId: string;
+  orderId: string;
+  exchangeOrderId?: string;
+  tradingsymbol: string;
+  exchange: string;
+  instrumentToken?: number;
+  transactionType: 'BUY' | 'SELL';
+  product?: string;
+  quantity: number;
+  /** Integer paise. */
+  averagePricePaise: number;
+  fillTimestamp?: string;
+  exchangeTimestamp?: string;
+  orderTimestamp?: string;
+  /** YYYY-MM-DD in IST. */
+  tradeDate: string;
+}
+
+export interface BrokerTrade {
+  tradeId: string;
+  orderId: string;
+  exchangeOrderId: string | null;
+  tradingsymbol: string;
+  exchange: string;
+  instrumentToken: number | null;
+  transactionType: 'BUY' | 'SELL';
+  product: string | null;
+  quantity: number;
+  averagePricePaise: number;
+  fillTimestamp: string | null;
+  exchangeTimestamp: string | null;
+  orderTimestamp: string | null;
+  tradeDate: string;
+  syncedAt: string;
+}
+
+interface BrokerTradeRow {
+  user_id: string;
+  trade_id: string;
+  order_id: string;
+  exchange_order_id: string | null;
+  tradingsymbol: string;
+  exchange: string;
+  instrument_token: number | null;
+  transaction_type: 'BUY' | 'SELL';
+  product: string | null;
+  quantity: number;
+  average_price_paise: number;
+  fill_timestamp: string | null;
+  exchange_timestamp: string | null;
+  order_timestamp: string | null;
+  trade_date: string;
+  synced_at: string;
+}
+
+function rowToBrokerTrade(row: BrokerTradeRow): BrokerTrade {
+  return {
+    tradeId: row.trade_id,
+    orderId: row.order_id,
+    exchangeOrderId: row.exchange_order_id,
+    tradingsymbol: row.tradingsymbol,
+    exchange: row.exchange,
+    instrumentToken: row.instrument_token,
+    transactionType: row.transaction_type,
+    product: row.product,
+    quantity: row.quantity,
+    averagePricePaise: row.average_price_paise,
+    fillTimestamp: row.fill_timestamp,
+    exchangeTimestamp: row.exchange_timestamp,
+    orderTimestamp: row.order_timestamp,
+    tradeDate: row.trade_date,
+    syncedAt: row.synced_at,
+  };
+}
+
+export interface BrokerTradeSync {
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  lastError: string | null;
+  fillsTotal: number;
+}
+
+interface BrokerTradeSyncRow {
+  user_id: string;
+  last_success_at: string | null;
+  last_attempt_at: string | null;
+  last_error: string | null;
+  fills_total: number;
+}
+
+function rowToBrokerTradeSync(row: BrokerTradeSyncRow): BrokerTradeSync {
+  return {
+    lastSuccessAt: row.last_success_at,
+    lastAttemptAt: row.last_attempt_at,
+    lastError: row.last_error,
+    fillsTotal: row.fills_total,
+  };
+}

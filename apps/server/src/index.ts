@@ -2,8 +2,11 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import express, { type ErrorRequestHandler, type Request, type Response } from 'express';
 import cookieParser from 'cookie-parser';
+import cron from 'node-cron';
 import { env } from './env.js';
 import { getDb, closeDb } from './db/index.js';
+import { createRepo } from './db/repo.js';
+import { syncAllUsers } from './jobs/zerodhaTradeSync.js';
 import { healthRouter } from './routes/health.js';
 import { authRouter } from './routes/auth.js';
 import { accountRouter } from './routes/account.js';
@@ -66,8 +69,32 @@ const server = app.listen(env.PORT, () => {
   console.log(`[server] listening on http://localhost:${env.PORT}`);
 });
 
+// ─── Daily Zerodha trade sync (18:00 IST) ────────────────────────────
+// Kite's /trades only returns the current trading day, so we snapshot it
+// every evening into broker_trades. Disabled when ZERODHA_SYNC_ENABLED=false.
+const syncTask =
+  env.ZERODHA_SYNC_ENABLED === false
+    ? null
+    : cron.schedule(
+        env.ZERODHA_SYNC_CRON,
+        async () => {
+          try {
+            await syncAllUsers(db, createRepo(db));
+          } catch (err) {
+            console.error('[zerodha-sync] cron run failed', err);
+          }
+        },
+        { name: 'zerodha-trade-sync', timezone: 'Asia/Kolkata' },
+      );
+if (syncTask) {
+  console.log(
+    `[server] zerodha trade sync scheduled (cron="${env.ZERODHA_SYNC_CRON}" Asia/Kolkata)`,
+  );
+}
+
 function shutdown(signal: string): void {
   console.log(`[server] ${signal} received, shutting down...`);
+  if (syncTask) syncTask.stop();
   server.close(() => {
     closeDb();
     process.exit(0);

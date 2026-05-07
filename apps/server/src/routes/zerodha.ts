@@ -5,6 +5,7 @@ import { userRepoFor } from '../auth/middleware.js';
 import { nowISO, parseBody, wrap } from './_helpers.js';
 import { createKiteClient, KiteError, type KiteClient } from '../broker/KiteClient.js';
 import type { UserRepo } from '../db/repo.js';
+import { syncBrokerTradesForUser } from '../jobs/zerodhaTradeSync.js';
 
 export const zerodhaRouter = Router();
 
@@ -214,6 +215,68 @@ zerodhaRouter.get(
     try {
       res.json(await b.client.getOrders(b.accessToken));
     } catch (err) {
+      handleKiteError(err, res);
+    }
+  }),
+);
+
+// Kite's /trades endpoint returns fills for the current trading day only.
+// Historical trades aren't exposed via REST — those come from Console reports.
+zerodhaRouter.get(
+  '/trades',
+  wrap(async (req, res) => {
+    const b = broker(req, res);
+    if (!b) return;
+    try {
+      res.json(await b.client.getTrades(b.accessToken));
+    } catch (err) {
+      handleKiteError(err, res);
+    }
+  }),
+);
+
+// Day-organized history of synced fills (multi-day). The daily sync job
+// snapshots Kite's /trades into broker_trades; this endpoint serves it.
+zerodhaRouter.get(
+  '/trades/history',
+  wrap((req, res) => {
+    const repo = userRepoFor(req);
+    const filter: { fromDate?: string; toDate?: string } = {};
+    if (typeof req.query.from === 'string' && req.query.from.length > 0) {
+      filter.fromDate = req.query.from;
+    }
+    if (typeof req.query.to === 'string' && req.query.to.length > 0) {
+      filter.toDate = req.query.to;
+    }
+    res.json({
+      trades: repo.listBrokerTrades(filter),
+      sync: repo.getBrokerTradeSync(),
+    });
+  }),
+);
+
+// Manual trigger for the daily sync. Useful when the user reconnects Kite
+// after 6PM IST and wants to capture today's fills immediately.
+zerodhaRouter.post(
+  '/trades/sync',
+  wrap(async (req, res) => {
+    const repo = userRepoFor(req);
+    if (!repo.getZerodhaSession()) return notLoggedIn(res);
+    try {
+      const result = await syncBrokerTradesForUser(repo);
+      res.json({
+        ok: true,
+        ...result,
+        sync: repo.getBrokerTradeSync(),
+      });
+    } catch (err) {
+      const message =
+        err instanceof KiteError
+          ? `${err.errorType ?? 'KiteError'}: ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : 'Sync failed.';
+      repo.recordBrokerTradeSyncFailure(nowISO(), message);
       handleKiteError(err, res);
     }
   }),
