@@ -41,8 +41,6 @@ Rules:
 Decision checks (deterministic engine the user trusts as ground truth):
 - C1 (BLOCK) phase ≠ LOCKED.
 - C2 (BLOCK) capitalRequired ≤ investableCorpus.
-- C3 (BLOCK) corpus − maxAcceptableLoss ≥ 0.5 × principalX.
-- C4 (WARN)  BOOTSTRAP requires reward/risk ≥ 2.
 - C5 (WARN)  capitalRequired ≤ positionSizeCap × corpus (if cap > 0).
 - C6 (WARN)  no other OPEN trade on the same symbol.
 `;
@@ -89,21 +87,12 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'evaluate_decision',
     description:
-      'Run the deterministic rules engine (C1–C6) against a proposed NewTradeInput. ' +
+      'Run the deterministic rules engine (C1, C2, C5, C6) against a proposed NewTradeInput. ' +
       'Returns the full DecisionRecord including the verdict and per-check breakdown. ' +
       'You MUST call this before issuing your own verdict and you MUST NOT override a BLOCK.',
     input_schema: {
       type: 'object',
-      required: [
-        'symbol',
-        'instrument',
-        'expiry',
-        'lotSize',
-        'qty',
-        'entryPrice',
-        'expectedExit',
-        'maxAcceptableLoss',
-      ],
+      required: ['symbol', 'instrument', 'expiry', 'lotSize', 'qty', 'entryPrice'],
       properties: {
         symbol: { type: 'string' },
         instrument: { type: 'string', enum: ['CE', 'PE', 'FUT'] },
@@ -112,8 +101,6 @@ export const TOOLS: ToolDefinition[] = [
         lotSize: { type: 'integer', minimum: 1 },
         qty: { type: 'integer', minimum: 1 },
         entryPrice: { type: 'integer', description: 'paise per unit' },
-        expectedExit: { type: 'integer', description: 'paise per unit' },
-        maxAcceptableLoss: { type: 'integer', description: 'paise total' },
         notes: { type: 'string' },
         agentSource: { type: 'string' },
       },
@@ -244,7 +231,7 @@ export class AdvisorService {
     const userMsg = `\
 Critique the following trade idea. Call evaluate_decision first.
 
-Input (paise; entryPrice/expectedExit are per unit, maxAcceptableLoss is total):
+Input (paise; entryPrice is per unit):
 ${JSON.stringify(req.input, null, 2)}
 
 Account snapshot for context:

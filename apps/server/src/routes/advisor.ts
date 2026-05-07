@@ -100,8 +100,6 @@ const NewTradeInputSchema = z.object({
   lotSize: z.number().int().positive(),
   qty: z.number().int().positive(),
   entryPrice: z.number().int().nonnegative(),
-  expectedExit: z.number().int().nonnegative(),
-  maxAcceptableLoss: z.number().int().nonnegative(),
   notes: z.string().optional(),
   agentSource: z.string().optional(),
 });

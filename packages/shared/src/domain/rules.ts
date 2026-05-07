@@ -241,16 +241,10 @@ export interface EvaluateOptions {
 
 export interface DecisionComputed {
   capitalRequired: number;
-  expectedReward: number;
-  rewardRiskRatio: number;
 }
 
 export function computeDecisionInputs(input: NewTradeInput): DecisionComputed {
-  const capitalRequired = input.entryPrice * input.qty * input.lotSize;
-  const expectedReward = (input.expectedExit - input.entryPrice) * input.qty * input.lotSize;
-  const rewardRiskRatio =
-    input.maxAcceptableLoss > 0 ? expectedReward / input.maxAcceptableLoss : 0;
-  return { capitalRequired, expectedReward, rewardRiskRatio };
+  return { capitalRequired: input.entryPrice * input.qty * input.lotSize };
 }
 
 export function evaluateDecision(
@@ -279,47 +273,6 @@ export function evaluateDecision(
           reason: 'Capital required exceeds investable corpus.',
         },
   );
-
-  // C3 — corpus − maxAcceptableLoss ≥ 0.5 * principalX. BLOCK.
-  if (snapshot.principalX === null) {
-    checks.push({
-      id: 'C3',
-      status: 'BLOCK',
-      reason: 'Principal X is not configured.',
-    });
-  } else {
-    const floor = Math.floor(snapshot.principalX / 2);
-    const ok = snapshot.investableCorpus - input.maxAcceptableLoss >= floor;
-    checks.push(
-      ok
-        ? { id: 'C3', status: 'OK', reason: 'Worst-case corpus stays at/above lock floor.' }
-        : {
-            id: 'C3',
-            status: 'BLOCK',
-            reason: 'Worst-case loss would breach the 50% lock floor.',
-          },
-    );
-  }
-
-  // C4 — BOOTSTRAP requires rewardRiskRatio ≥ 2. WARN.
-  if (snapshot.phase === 'BOOTSTRAP') {
-    const ratio =
-      input.maxAcceptableLoss > 0
-        ? ((input.expectedExit - input.entryPrice) * input.qty * input.lotSize) /
-          input.maxAcceptableLoss
-        : 0;
-    checks.push(
-      ratio >= 2
-        ? { id: 'C4', status: 'OK', reason: `Reward/risk = ${ratio.toFixed(2)} (≥ 2).` }
-        : {
-            id: 'C4',
-            status: 'WARN',
-            reason: `Bootstrap phase wants reward/risk ≥ 2; got ${ratio.toFixed(2)}.`,
-          },
-    );
-  } else {
-    checks.push({ id: 'C4', status: 'OK', reason: 'C4 only applies in BOOTSTRAP.' });
-  }
 
   // C5 — position-size soft cap. WARN. Disabled if cap = 0.
   if (snapshot.positionSizeCap > 0) {

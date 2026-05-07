@@ -75,13 +75,11 @@ export interface NewTradeInput {
   lotSize: number;
   qty: number;
   entryPrice: number;
-  expectedExit: number;
-  maxAcceptableLoss: number;
   notes?: string;
   agentSource?: string;
 }
 
-export type CheckId = 'C1' | 'C2' | 'C3' | 'C4' | 'C5' | 'C6';
+export type CheckId = 'C1' | 'C2' | 'C5' | 'C6';
 export type CheckStatus = 'OK' | 'WARN' | 'BLOCK';
 export type Verdict = 'GO' | 'WARN' | 'BLOCK';
 
