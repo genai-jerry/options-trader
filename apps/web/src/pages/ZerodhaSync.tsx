@@ -408,6 +408,78 @@ interface OrderbookSummary {
   realisedPnL: number;
   unrealisedPnL: number;
   bySymbol: OrderbookSymbolAggregate[];
+  /** Capital-flow rollup — see computeCapitalFlow for semantics. */
+  flow: CapitalFlow;
+}
+
+/**
+ * Capital-flow view: how much outside money was actually put in vs. how
+ * much of every buy was just recycling prior sell proceeds.
+ *
+ * `originalCapital` is the peak running deficit when COMPLETE fills are
+ * walked in chronological order. That's the most cash this strategy ever
+ * needed at one moment — buying again after a sell doesn't grow it.
+ *
+ * Buys above that peak (`recycledBuys = grossBuys − originalCapital`) are
+ * funded entirely by sale proceeds. Each rupee of sale proceeds is part
+ * cost-basis (principal) and part realised profit. We split the recycled
+ * total into:
+ *   - principalReturned = grossSells − realisedPnL  (cost basis recovered)
+ *   - recycledPrincipal = min(recycledBuys, principalReturned)
+ *   - profitRedeployed  = max(0, recycledBuys − principalReturned)
+ *
+ * `finalCapital` = originalCapital + realisedPnL + unrealisedPnL — what
+ * the position is worth if every open leg is closed at LTP right now.
+ */
+interface CapitalFlow {
+  originalCapital: number;
+  recycledPrincipal: number;
+  profitRedeployed: number;
+  netInMarket: number;
+  finalCapital: number;
+}
+
+function computeCapitalFlow(
+  orders: KiteOrder[],
+  realisedPnL: number,
+  unrealisedPnL: number,
+): CapitalFlow {
+  const sorted = orders
+    .filter((o) => o.status === 'COMPLETE' && o.filled_quantity > 0)
+    .slice()
+    .sort((a, b) => (a.order_timestamp ?? '').localeCompare(b.order_timestamp ?? ''));
+
+  let cash = 0;
+  let peakDeficit = 0;
+  let grossBuys = 0;
+  let grossSells = 0;
+  for (const o of sorted) {
+    const value = o.filled_quantity * o.average_price;
+    if (o.transaction_type === 'BUY') {
+      cash -= value;
+      grossBuys += value;
+      if (-cash > peakDeficit) peakDeficit = -cash;
+    } else if (o.transaction_type === 'SELL') {
+      cash += value;
+      grossSells += value;
+    }
+  }
+
+  const originalCapital = peakDeficit;
+  const recycledBuys = Math.max(0, grossBuys - originalCapital);
+  const principalReturned = Math.max(0, grossSells - realisedPnL);
+  const recycledPrincipal = Math.min(recycledBuys, principalReturned);
+  const profitRedeployed = Math.max(0, recycledBuys - principalReturned);
+  const netInMarket = grossBuys - grossSells;
+  const finalCapital = originalCapital + realisedPnL + unrealisedPnL;
+
+  return {
+    originalCapital,
+    recycledPrincipal,
+    profitRedeployed,
+    netInMarket,
+    finalCapital,
+  };
 }
 
 function computeOrderbookSummary(
@@ -465,7 +537,16 @@ function computeOrderbookSummary(
     a.symbol.localeCompare(b.symbol),
   );
 
-  return { bought, sold, realisedPnL: realised, unrealisedPnL: unrealised, bySymbol };
+  const flow = computeCapitalFlow(orders, realised, unrealised);
+
+  return {
+    bought,
+    sold,
+    realisedPnL: realised,
+    unrealisedPnL: unrealised,
+    bySymbol,
+    flow,
+  };
 }
 
 function OrderbookView() {
@@ -553,6 +634,42 @@ function OrderbookView() {
           primary={fmtINR(summary.unrealisedPnL)}
           primaryColor={summary.unrealisedPnL >= 0 ? 'success.main' : 'error.main'}
           secondary="Open positions × LTP"
+        />
+      </Box>
+
+      <Typography variant="overline" color="text.secondary" sx={{ mt: 1 }}>
+        Capital flow
+      </Typography>
+      <Box
+        display="grid"
+        gridTemplateColumns={{ xs: '1fr 1fr', sm: 'repeat(4, 1fr)' }}
+        gap={2}
+      >
+        <SummaryTile
+          label="Original capital"
+          primary={fmtINR(summary.flow.originalCapital)}
+          secondary="Peak deficit — outside money put in"
+        />
+        <SummaryTile
+          label="Recycled principal"
+          primary={fmtINR(summary.flow.recycledPrincipal)}
+          secondary="Buys funded by prior sells' cost basis"
+        />
+        <SummaryTile
+          label="Profit redeployed"
+          primary={fmtINR(summary.flow.profitRedeployed)}
+          primaryColor={summary.flow.profitRedeployed > 0 ? 'success.main' : undefined}
+          secondary="Realised gains put back into buys"
+        />
+        <SummaryTile
+          label="Final capital"
+          primary={fmtINR(summary.flow.finalCapital)}
+          primaryColor={
+            summary.flow.finalCapital >= summary.flow.originalCapital
+              ? 'success.main'
+              : 'error.main'
+          }
+          secondary="Original + realised + unrealised"
         />
       </Box>
 
