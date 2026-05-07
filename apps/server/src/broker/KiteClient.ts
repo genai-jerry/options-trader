@@ -125,6 +125,22 @@ export interface KiteOrder {
   cancelled_quantity: number;
 }
 
+export interface KiteTrade {
+  trade_id: string;
+  order_id: string;
+  exchange_order_id?: string;
+  tradingsymbol: string;
+  exchange: string;
+  instrument_token: number;
+  transaction_type: 'BUY' | 'SELL';
+  product: string;
+  average_price: number;
+  quantity: number;
+  fill_timestamp?: string;
+  exchange_timestamp?: string;
+  order_timestamp?: string;
+}
+
 export interface KiteCredentials {
   apiKey: string;
   apiSecret: string;
@@ -221,6 +237,7 @@ export function createKiteClient(creds: KiteCredentials) {
     getPositions: (accessToken: string) =>
       call<KitePositions>('GET', '/portfolio/positions', accessToken),
     getOrders: (accessToken: string) => call<KiteOrder[]>('GET', '/orders', accessToken),
+    getTrades: (accessToken: string) => call<KiteTrade[]>('GET', '/trades', accessToken),
   };
 }
 

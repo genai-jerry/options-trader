@@ -219,6 +219,21 @@ zerodhaRouter.get(
   }),
 );
 
+// Kite's /trades endpoint returns fills for the current trading day only.
+// Historical trades aren't exposed via REST — those come from Console reports.
+zerodhaRouter.get(
+  '/trades',
+  wrap(async (req, res) => {
+    const b = broker(req, res);
+    if (!b) return;
+    try {
+      res.json(await b.client.getTrades(b.accessToken));
+    } catch (err) {
+      handleKiteError(err, res);
+    }
+  }),
+);
+
 zerodhaRouter.post(
   '/disconnect',
   wrap(async (req, res) => {

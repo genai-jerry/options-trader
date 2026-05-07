@@ -120,6 +120,20 @@ export interface KiteOrder {
   order_timestamp: string;
 }
 
+export interface KiteTrade {
+  trade_id: string;
+  order_id: string;
+  tradingsymbol: string;
+  exchange: string;
+  transaction_type: 'BUY' | 'SELL';
+  product: string;
+  average_price: number;
+  quantity: number;
+  fill_timestamp?: string;
+  exchange_timestamp?: string;
+  order_timestamp?: string;
+}
+
 class HttpError extends Error {
   status: number;
   body: unknown;
@@ -282,6 +296,7 @@ export const api = {
   zerodhaPositions: () =>
     request<{ net: KitePosition[]; day: KitePosition[] }>('GET', '/api/zerodha/positions'),
   zerodhaOrders: () => request<KiteOrder[]>('GET', '/api/zerodha/orders'),
+  zerodhaTrades: () => request<KiteTrade[]>('GET', '/api/zerodha/trades'),
   zerodhaDisconnect: () => request<{ ok: boolean }>('POST', '/api/zerodha/disconnect'),
 
   // ── health ───────────────────────────────────────────────────────────
