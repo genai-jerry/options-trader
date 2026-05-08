@@ -28,6 +28,21 @@ import {
   type KiteOrder,
   type KitePosition,
 } from '../api/client';
+import {
+  SLAB_OPTIONS,
+  SLAB_STORAGE_KEY,
+  TAX_RATES_REVIEWED_AT,
+  TAX_RATES_SOURCE_URL,
+  aggregateCharges,
+  classifyByMeta,
+  computeRealisedFifo,
+  computeTaxLiability,
+  startOfCurrentFY,
+  type FifoFill,
+  type FillForCharges,
+  type OrderForBrokerage,
+  type TaxLiability,
+} from '../domain/indianTax';
 
 const Z_KEY = ['zerodha'] as const;
 
@@ -413,140 +428,101 @@ interface OrderbookSummary {
   flow: CapitalFlow;
 }
 
-// ─── Indian tax & charges (Zerodha F&O / equity, post-Oct 2024) ──────
-//
-// Rates sourced from Zerodha's published charge sheet. Income tax on F&O
-// is non-speculative business income (Section 43(5)) — taxed at the
-// individual's slab rate, not a flat rate. We expose a slab selector
-// (default 30%) and add the 4% health & education cess on top.
-//
-// Caveats kept intentional (not bugs):
-//   - Brokerage is ₹20 per ORDER, not per fill. Each KiteOrder counts as
-//     one order, which matches Zerodha's billing.
-//   - SEBI Turnover Fee is ₹10/crore = 0.0001%, applied both sides.
-//   - Income tax is applied to the day's net realised after charges.
-//     Real liability is annual (after offsetting losses, deductions,
-//     other income, etc.); this is a per-day estimate, not a tax filing.
-
-type TaxSegment = 'option' | 'future' | 'equity-delivery' | 'equity-intraday';
-
-function classifyOrder(o: KiteOrder): TaxSegment {
-  const sym = (o.tradingsymbol ?? '').toUpperCase();
-  const exch = (o.exchange ?? '').toUpperCase();
-  const prod = (o.product ?? '').toUpperCase();
-  if (exch === 'NFO' || exch === 'BFO' || exch === 'CDS' || exch === 'BCD') {
-    if (sym.endsWith('CE') || sym.endsWith('PE')) return 'option';
-    return 'future';
-  }
-  return prod === 'MIS' ? 'equity-intraday' : 'equity-delivery';
-}
-
-interface OrderCharges {
-  stt: number;
-  exchange: number;
-  sebi: number;
-  stamp: number;
-  brokerage: number;
-  gst: number;
-}
-
-const ZERO_CHARGES: OrderCharges = {
-  stt: 0,
-  exchange: 0,
-  sebi: 0,
-  stamp: 0,
-  brokerage: 0,
-  gst: 0,
-};
-
-function computeOrderCharges(o: KiteOrder): OrderCharges {
-  if (o.status !== 'COMPLETE' || o.filled_quantity <= 0) return ZERO_CHARGES;
-
-  const seg = classifyOrder(o);
-  const value = o.filled_quantity * o.average_price;
-  const isBuy = o.transaction_type === 'BUY';
-  const isSell = o.transaction_type === 'SELL';
-
-  let stt = 0;
-  let exchange = 0;
-  let sebi = value * 0.000001;
-  let stamp = 0;
-  let brokerage = 20;
-
-  if (seg === 'option') {
-    stt = isSell ? value * 0.001 : 0;
-    exchange = value * 0.0003503;
-    stamp = isBuy ? value * 0.00003 : 0;
-  } else if (seg === 'future') {
-    stt = isSell ? value * 0.0002 : 0;
-    exchange = value * 0.000019;
-    stamp = isBuy ? value * 0.00002 : 0;
-  } else if (seg === 'equity-intraday') {
-    stt = isSell ? value * 0.00025 : 0;
-    exchange = value * 0.0000297;
-    stamp = isBuy ? value * 0.00003 : 0;
-  } else {
-    // equity-delivery: brokerage zero on Zerodha; STT both sides.
-    stt = value * 0.001;
-    exchange = value * 0.0000297;
-    stamp = isBuy ? value * 0.00015 : 0;
-    brokerage = 0;
-  }
-
-  const gst = (brokerage + exchange + sebi) * 0.18;
-  return { stt, exchange, sebi, stamp, brokerage, gst };
-}
-
-interface ChargesBreakdown extends OrderCharges {
-  total: number;
-}
-
-function sumCharges(orders: KiteOrder[]): ChargesBreakdown {
-  const t: OrderCharges = { ...ZERO_CHARGES };
+// Convert a Kite order into (fill, brokerage-order) inputs for the
+// generic charge aggregator. Skips non-COMPLETE orders.
+function ordersToTaxInputs(orders: KiteOrder[]): {
+  fills: FillForCharges[];
+  brokerageOrders: OrderForBrokerage[];
+} {
+  const fills: FillForCharges[] = [];
+  const brokerageOrders: OrderForBrokerage[] = [];
   for (const o of orders) {
-    const c = computeOrderCharges(o);
-    t.stt += c.stt;
-    t.exchange += c.exchange;
-    t.sebi += c.sebi;
-    t.stamp += c.stamp;
-    t.brokerage += c.brokerage;
-    t.gst += c.gst;
+    if (o.status !== 'COMPLETE' || o.filled_quantity <= 0) continue;
+    const segment = classifyByMeta({
+      tradingsymbol: o.tradingsymbol,
+      exchange: o.exchange,
+      product: o.product,
+    });
+    fills.push({
+      segment,
+      side: o.transaction_type === 'BUY' ? 'BUY' : 'SELL',
+      turnover: o.filled_quantity * o.average_price,
+    });
+    brokerageOrders.push({ segment });
   }
-  return { ...t, total: t.stt + t.exchange + t.sebi + t.stamp + t.brokerage + t.gst };
+  return { fills, brokerageOrders };
 }
 
-interface TaxLiability {
-  charges: ChargesBreakdown;
-  /** Realised P&L after deducting transaction charges, before income tax. */
-  realisedAfterCharges: number;
-  /** Effective income-tax rate applied (slab + 4% cess), e.g. 0.312 for 30% slab. */
-  effectiveRate: number;
-  /** Income tax estimate. Zero when realisedAfterCharges <= 0 (losses aren't taxed). */
-  incomeTax: number;
-  /** Net realised after charges and income tax. */
-  realisedAfterAll: number;
+// Convert synced Kite fills (broker_trades) into tax inputs. Brokerage is
+// per-order, not per-fill — group by order_id and bill ₹20 per unique
+// order so partial fills don't inflate it.
+function brokerTradesToTaxInputs(trades: BrokerTrade[]): {
+  fills: FillForCharges[];
+  brokerageOrders: OrderForBrokerage[];
+} {
+  const fills: FillForCharges[] = [];
+  const orderSegments = new Map<string, OrderForBrokerage['segment']>();
+  for (const t of trades) {
+    const segment = classifyByMeta({
+      tradingsymbol: t.tradingsymbol,
+      exchange: t.exchange,
+      product: t.product,
+    });
+    fills.push({
+      segment,
+      side: t.transactionType,
+      turnover: (t.quantity * t.averagePricePaise) / 100,
+    });
+    if (!orderSegments.has(t.orderId)) orderSegments.set(t.orderId, segment);
+  }
+  const brokerageOrders: OrderForBrokerage[] = [...orderSegments.values()].map(
+    (segment) => ({ segment }),
+  );
+  return { fills, brokerageOrders };
 }
 
-function computeTaxLiability(
-  orders: KiteOrder[],
-  grossRealised: number,
-  slabPercent: number,
-): TaxLiability {
-  const charges = sumCharges(orders);
-  const realisedAfterCharges = grossRealised - charges.total;
-  const effectiveRate = (slabPercent / 100) * 1.04; // 4% cess
-  const incomeTax = realisedAfterCharges > 0 ? realisedAfterCharges * effectiveRate : 0;
-  return {
-    charges,
-    realisedAfterCharges,
-    effectiveRate,
-    incomeTax,
-    realisedAfterAll: realisedAfterCharges - incomeTax,
-  };
+function computeOrderbookTax(orders: KiteOrder[], grossRealised: number, slab: number): TaxLiability {
+  const { fills, brokerageOrders } = ordersToTaxInputs(orders);
+  return computeTaxLiability(fills, brokerageOrders, grossRealised, slab);
 }
 
-const SLAB_OPTIONS = [0, 5, 10, 15, 20, 30] as const;
-const SLAB_STORAGE_KEY = 'options-trader.zerodha.taxSlab';
+function useTaxSlab(): [number, (n: number) => void] {
+  const [slab, setSlab] = useState<number>(() => {
+    const stored = window.localStorage.getItem(SLAB_STORAGE_KEY);
+    const n = stored ? Number(stored) : 30;
+    return SLAB_OPTIONS.includes(n as (typeof SLAB_OPTIONS)[number]) ? n : 30;
+  });
+  useEffect(() => {
+    window.localStorage.setItem(SLAB_STORAGE_KEY, String(slab));
+  }, [slab]);
+  return [slab, setSlab];
+}
+
+function TaxSlabSelect({
+  slab,
+  onChange,
+}: {
+  slab: number;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <TextField
+      select
+      size="small"
+      label="Income-tax slab"
+      value={slab}
+      onChange={(e) => onChange(Number(e.target.value))}
+      sx={{ minWidth: 160 }}
+      helperText="F&O is non-spec. business income"
+    >
+      {SLAB_OPTIONS.map((s) => (
+        <MenuItem key={s} value={s}>
+          {s}%{s === 30 ? ' (default)' : ''}
+        </MenuItem>
+      ))}
+    </TextField>
+  );
+}
 
 /**
  * Capital-flow view: how much outside money was actually put in vs. how
@@ -696,14 +672,7 @@ function OrderbookView() {
     queryFn: api.zerodhaPositions,
   });
 
-  const [slab, setSlab] = useState<number>(() => {
-    const stored = window.localStorage.getItem(SLAB_STORAGE_KEY);
-    const n = stored ? Number(stored) : 30;
-    return SLAB_OPTIONS.includes(n as (typeof SLAB_OPTIONS)[number]) ? n : 30;
-  });
-  useEffect(() => {
-    window.localStorage.setItem(SLAB_STORAGE_KEY, String(slab));
-  }, [slab]);
+  const [slab, setSlab] = useTaxSlab();
 
   const recompute = (): void => {
     void qc.invalidateQueries({ queryKey: [...Z_KEY, 'orders'] });
@@ -716,7 +685,7 @@ function OrderbookView() {
   const orders = ordersQ.data ?? [];
   const positions = positionsQ.data?.day ?? [];
   const summary = computeOrderbookSummary(orders, positions);
-  const tax = computeTaxLiability(orders, summary.realisedPnL, slab);
+  const tax = computeOrderbookTax(orders, summary.realisedPnL, slab);
   const recomputing = ordersQ.isFetching || positionsQ.isFetching;
 
   const cols: GridColDef<KiteOrder>[] = [
@@ -826,24 +795,23 @@ function OrderbookView() {
         spacing={1}
         sx={{ mt: 1 }}
       >
-        <Typography variant="overline" color="text.secondary">
-          Tax & charges (estimated)
-        </Typography>
-        <TextField
-          select
-          size="small"
-          label="Income-tax slab"
-          value={slab}
-          onChange={(e) => setSlab(Number(e.target.value))}
-          sx={{ minWidth: 160 }}
-          helperText="F&O is non-spec. business income"
-        >
-          {SLAB_OPTIONS.map((s) => (
-            <MenuItem key={s} value={s}>
-              {s}%{s === 30 ? ' (default)' : ''}
-            </MenuItem>
-          ))}
-        </TextField>
+        <Box>
+          <Typography variant="overline" color="text.secondary">
+            Tax & charges (estimated)
+          </Typography>
+          <Typography variant="caption" color="text.secondary" component="div">
+            Rates verified {TAX_RATES_REVIEWED_AT} ·{' '}
+            <a
+              href={TAX_RATES_SOURCE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'inherit' }}
+            >
+              source
+            </a>
+          </Typography>
+        </Box>
+        <TaxSlabSelect slab={slab} onChange={setSlab} />
       </Stack>
 
       <Box
@@ -1143,6 +1111,7 @@ function TradesView() {
 }
 
 function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
+  const [slab, setSlab] = useTaxSlab();
   const days = aggregateBrokerTrades(trades);
   const totals = days.reduce(
     (acc, d) => ({
@@ -1154,6 +1123,31 @@ function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
     }),
     { buyQty: 0, buyValue: 0, sellQty: 0, sellValue: 0, realisedPnL: 0 },
   );
+
+  // YTD = current Indian financial year (Apr 1 → Mar 31). Cross-day FIFO
+  // matching catches positions opened one day and closed another (any
+  // overnight/swing F&O leg, weekly-expiry options held past midnight).
+  // Per-day matching alone would silently miss that P&L.
+  const fyStart = startOfCurrentFY();
+  const ytdTrades = trades.filter((t) => t.tradeDate >= fyStart);
+  const ytdFifoFills: FifoFill[] = ytdTrades.map((t) => ({
+    tradingsymbol: t.tradingsymbol,
+    exchange: t.exchange,
+    transactionType: t.transactionType,
+    quantity: t.quantity,
+    pricePerUnitRupees: t.averagePricePaise / 100,
+    sortKey:
+      t.fillTimestamp ?? t.exchangeTimestamp ?? t.orderTimestamp ?? t.tradeDate,
+  }));
+  const ytdRealised = computeRealisedFifo(ytdFifoFills);
+  const ytdTaxInputs = brokerTradesToTaxInputs(ytdTrades);
+  const ytdTax = computeTaxLiability(
+    ytdTaxInputs.fills,
+    ytdTaxInputs.brokerageOrders,
+    ytdRealised,
+    slab,
+  );
+  const ytdDayCount = new Set(ytdTrades.map((t) => t.tradeDate)).size;
 
   const tradeCols: GridColDef<BrokerTrade>[] = [
     {
@@ -1223,6 +1217,84 @@ function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
           primary={fmtINR(totals.realisedPnL)}
           primaryColor={totals.realisedPnL >= 0 ? 'success.main' : 'error.main'}
           secondary="Matched intraday legs"
+        />
+      </Box>
+
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        spacing={1}
+        sx={{ mt: 1 }}
+      >
+        <Box>
+          <Typography variant="overline" color="text.secondary">
+            Year-to-date tax (FY since {fyStart}, {ytdDayCount} day{ytdDayCount === 1 ? '' : 's'})
+          </Typography>
+          <Typography variant="caption" color="text.secondary" component="div">
+            Cross-day FIFO matching · Rates verified {TAX_RATES_REVIEWED_AT} ·{' '}
+            <a
+              href={TAX_RATES_SOURCE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'inherit' }}
+            >
+              source
+            </a>
+          </Typography>
+        </Box>
+        <TaxSlabSelect slab={slab} onChange={setSlab} />
+      </Stack>
+
+      <Box
+        display="grid"
+        gridTemplateColumns={{ xs: '1fr 1fr', sm: 'repeat(4, 1fr)' }}
+        gap={2}
+      >
+        <SummaryTile
+          label="YTD realised (FIFO)"
+          primary={fmtINR(ytdRealised)}
+          primaryColor={ytdRealised >= 0 ? 'success.main' : 'error.main'}
+          secondary="Matched across days"
+        />
+        <Tooltip
+          title={
+            <Box sx={{ fontSize: 12 }}>
+              <div>STT: {fmtINR(ytdTax.charges.stt)}</div>
+              <div>Exchange txn: {fmtINR(ytdTax.charges.exchange)}</div>
+              <div>SEBI fee: {fmtINR(ytdTax.charges.sebi)}</div>
+              <div>Stamp duty: {fmtINR(ytdTax.charges.stamp)}</div>
+              <div>Brokerage: {fmtINR(ytdTax.charges.brokerage)}</div>
+              <div>GST (18%): {fmtINR(ytdTax.charges.gst)}</div>
+            </Box>
+          }
+          placement="top"
+          arrow
+        >
+          <Box>
+            <SummaryTile
+              label="YTD charges"
+              primary={fmtINR(ytdTax.charges.total)}
+              primaryColor="error.main"
+              secondary="STT + exch + GST + stamp + brokerage"
+            />
+          </Box>
+        </Tooltip>
+        <SummaryTile
+          label={`YTD income tax @ ${slab}% + cess`}
+          primary={fmtINR(ytdTax.incomeTax)}
+          primaryColor={ytdTax.incomeTax > 0 ? 'error.main' : undefined}
+          secondary={
+            ytdTax.realisedAfterCharges > 0
+              ? `Effective ${(ytdTax.effectiveRate * 100).toFixed(1)}% on ₹${ytdTax.realisedAfterCharges.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+              : 'No tax on a net loss'
+          }
+        />
+        <SummaryTile
+          label="YTD net after tax"
+          primary={fmtINR(ytdTax.realisedAfterAll)}
+          primaryColor={ytdTax.realisedAfterAll >= 0 ? 'success.main' : 'error.main'}
+          secondary="Realised − charges − income tax"
         />
       </Box>
 
