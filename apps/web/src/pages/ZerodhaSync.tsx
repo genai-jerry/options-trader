@@ -486,6 +486,40 @@ function computeOrderbookTax(orders: KiteOrder[], grossRealised: number, slab: n
   return computeTaxLiability(fills, brokerageOrders, grossRealised, slab);
 }
 
+interface YtdSummary {
+  /** YYYY-MM-DD start of the current Indian FY. */
+  fyStart: string;
+  /** Distinct trading days included in the YTD window. */
+  dayCount: number;
+  /** Cross-day FIFO realised P&L since fyStart. */
+  realised: number;
+  tax: TaxLiability;
+}
+
+function computeYtdSummary(trades: BrokerTrade[], slab: number): YtdSummary {
+  const fyStart = startOfCurrentFY();
+  const ytdTrades = trades.filter((t) => t.tradeDate >= fyStart);
+  const fills: FifoFill[] = ytdTrades.map((t) => ({
+    tradingsymbol: t.tradingsymbol,
+    exchange: t.exchange,
+    transactionType: t.transactionType,
+    quantity: t.quantity,
+    pricePerUnitRupees: t.averagePricePaise / 100,
+    sortKey:
+      t.fillTimestamp ?? t.exchangeTimestamp ?? t.orderTimestamp ?? t.tradeDate,
+  }));
+  const realised = computeRealisedFifo(fills);
+  const taxInputs = brokerTradesToTaxInputs(ytdTrades);
+  const tax = computeTaxLiability(
+    taxInputs.fills,
+    taxInputs.brokerageOrders,
+    realised,
+    slab,
+  );
+  const dayCount = new Set(ytdTrades.map((t) => t.tradeDate)).size;
+  return { fyStart, dayCount, realised, tax };
+}
+
 function useTaxSlab(): [number, (n: number) => void] {
   const [slab, setSlab] = useState<number>(() => {
     const stored = window.localStorage.getItem(SLAB_STORAGE_KEY);
@@ -671,12 +705,19 @@ function OrderbookView() {
     queryKey: [...Z_KEY, 'positions'],
     queryFn: api.zerodhaPositions,
   });
+  // Final capital uses YTD net-after-tax instead of just today's
+  // realised, so the tile reflects everything booked since Apr 1.
+  const ytdQ = useQuery({
+    queryKey: [...Z_KEY, 'trades-history'],
+    queryFn: () => api.zerodhaTradesHistory(),
+  });
 
   const [slab, setSlab] = useTaxSlab();
 
   const recompute = (): void => {
     void qc.invalidateQueries({ queryKey: [...Z_KEY, 'orders'] });
     void qc.invalidateQueries({ queryKey: [...Z_KEY, 'positions'] });
+    void qc.invalidateQueries({ queryKey: [...Z_KEY, 'trades-history'] });
   };
 
   if (ordersQ.isLoading) return <CircularProgress />;
@@ -686,7 +727,17 @@ function OrderbookView() {
   const positions = positionsQ.data?.day ?? [];
   const summary = computeOrderbookSummary(orders, positions);
   const tax = computeOrderbookTax(orders, summary.realisedPnL, slab);
-  const recomputing = ordersQ.isFetching || positionsQ.isFetching;
+
+  const ytdTrades = ytdQ.data?.trades ?? [];
+  const ytd = ytdTrades.length > 0 ? computeYtdSummary(ytdTrades, slab) : null;
+  // Final capital = original capital + (YTD net after tax if available,
+  // else today's realised) + today's unrealised. The fallback keeps the
+  // tile sensible before the first daily sync has run.
+  const finalCapitalAdjustment = ytd ? ytd.tax.realisedAfterAll : summary.realisedPnL;
+  const finalCapital = summary.flow.originalCapital + finalCapitalAdjustment + summary.unrealisedPnL;
+
+  const recomputing =
+    ordersQ.isFetching || positionsQ.isFetching || ytdQ.isFetching;
 
   const cols: GridColDef<KiteOrder>[] = [
     { field: 'order_timestamp', headerName: 'Time', width: 170 },
@@ -778,13 +829,17 @@ function OrderbookView() {
         />
         <SummaryTile
           label="Final capital"
-          primary={fmtINR(summary.flow.finalCapital)}
+          primary={fmtINR(finalCapital)}
           primaryColor={
-            summary.flow.finalCapital >= summary.flow.originalCapital
+            finalCapital >= summary.flow.originalCapital
               ? 'success.main'
               : 'error.main'
           }
-          secondary="Original + realised + unrealised"
+          secondary={
+            ytd
+              ? `Original + YTD net after tax + unrealised`
+              : `Original + today's realised + unrealised (YTD pending)`
+          }
         />
       </Box>
 
@@ -1128,26 +1183,8 @@ function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
   // matching catches positions opened one day and closed another (any
   // overnight/swing F&O leg, weekly-expiry options held past midnight).
   // Per-day matching alone would silently miss that P&L.
-  const fyStart = startOfCurrentFY();
-  const ytdTrades = trades.filter((t) => t.tradeDate >= fyStart);
-  const ytdFifoFills: FifoFill[] = ytdTrades.map((t) => ({
-    tradingsymbol: t.tradingsymbol,
-    exchange: t.exchange,
-    transactionType: t.transactionType,
-    quantity: t.quantity,
-    pricePerUnitRupees: t.averagePricePaise / 100,
-    sortKey:
-      t.fillTimestamp ?? t.exchangeTimestamp ?? t.orderTimestamp ?? t.tradeDate,
-  }));
-  const ytdRealised = computeRealisedFifo(ytdFifoFills);
-  const ytdTaxInputs = brokerTradesToTaxInputs(ytdTrades);
-  const ytdTax = computeTaxLiability(
-    ytdTaxInputs.fills,
-    ytdTaxInputs.brokerageOrders,
-    ytdRealised,
-    slab,
-  );
-  const ytdDayCount = new Set(ytdTrades.map((t) => t.tradeDate)).size;
+  const ytd = computeYtdSummary(trades, slab);
+  const { fyStart, dayCount: ytdDayCount, realised: ytdRealised, tax: ytdTax } = ytd;
 
   const tradeCols: GridColDef<BrokerTrade>[] = [
     {
