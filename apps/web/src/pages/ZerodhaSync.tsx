@@ -8,6 +8,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  MenuItem,
   Stack,
   Tab,
   Tabs,
@@ -27,6 +28,21 @@ import {
   type KiteOrder,
   type KitePosition,
 } from '../api/client';
+import {
+  SLAB_OPTIONS,
+  SLAB_STORAGE_KEY,
+  TAX_RATES_REVIEWED_AT,
+  TAX_RATES_SOURCE_URL,
+  aggregateCharges,
+  classifyByMeta,
+  computeRealisedFifo,
+  computeTaxLiability,
+  startOfCurrentFY,
+  type FifoFill,
+  type FillForCharges,
+  type OrderForBrokerage,
+  type TaxLiability,
+} from '../domain/indianTax';
 
 const Z_KEY = ['zerodha'] as const;
 
@@ -412,6 +428,102 @@ interface OrderbookSummary {
   flow: CapitalFlow;
 }
 
+// Convert a Kite order into (fill, brokerage-order) inputs for the
+// generic charge aggregator. Skips non-COMPLETE orders.
+function ordersToTaxInputs(orders: KiteOrder[]): {
+  fills: FillForCharges[];
+  brokerageOrders: OrderForBrokerage[];
+} {
+  const fills: FillForCharges[] = [];
+  const brokerageOrders: OrderForBrokerage[] = [];
+  for (const o of orders) {
+    if (o.status !== 'COMPLETE' || o.filled_quantity <= 0) continue;
+    const segment = classifyByMeta({
+      tradingsymbol: o.tradingsymbol,
+      exchange: o.exchange,
+      product: o.product,
+    });
+    fills.push({
+      segment,
+      side: o.transaction_type === 'BUY' ? 'BUY' : 'SELL',
+      turnover: o.filled_quantity * o.average_price,
+    });
+    brokerageOrders.push({ segment });
+  }
+  return { fills, brokerageOrders };
+}
+
+// Convert synced Kite fills (broker_trades) into tax inputs. Brokerage is
+// per-order, not per-fill — group by order_id and bill ₹20 per unique
+// order so partial fills don't inflate it.
+function brokerTradesToTaxInputs(trades: BrokerTrade[]): {
+  fills: FillForCharges[];
+  brokerageOrders: OrderForBrokerage[];
+} {
+  const fills: FillForCharges[] = [];
+  const orderSegments = new Map<string, OrderForBrokerage['segment']>();
+  for (const t of trades) {
+    const segment = classifyByMeta({
+      tradingsymbol: t.tradingsymbol,
+      exchange: t.exchange,
+      product: t.product,
+    });
+    fills.push({
+      segment,
+      side: t.transactionType,
+      turnover: (t.quantity * t.averagePricePaise) / 100,
+    });
+    if (!orderSegments.has(t.orderId)) orderSegments.set(t.orderId, segment);
+  }
+  const brokerageOrders: OrderForBrokerage[] = [...orderSegments.values()].map(
+    (segment) => ({ segment }),
+  );
+  return { fills, brokerageOrders };
+}
+
+function computeOrderbookTax(orders: KiteOrder[], grossRealised: number, slab: number): TaxLiability {
+  const { fills, brokerageOrders } = ordersToTaxInputs(orders);
+  return computeTaxLiability(fills, brokerageOrders, grossRealised, slab);
+}
+
+function useTaxSlab(): [number, (n: number) => void] {
+  const [slab, setSlab] = useState<number>(() => {
+    const stored = window.localStorage.getItem(SLAB_STORAGE_KEY);
+    const n = stored ? Number(stored) : 30;
+    return SLAB_OPTIONS.includes(n as (typeof SLAB_OPTIONS)[number]) ? n : 30;
+  });
+  useEffect(() => {
+    window.localStorage.setItem(SLAB_STORAGE_KEY, String(slab));
+  }, [slab]);
+  return [slab, setSlab];
+}
+
+function TaxSlabSelect({
+  slab,
+  onChange,
+}: {
+  slab: number;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <TextField
+      select
+      size="small"
+      label="Income-tax slab"
+      value={slab}
+      onChange={(e) => onChange(Number(e.target.value))}
+      sx={{ minWidth: 160 }}
+      helperText="F&O is non-spec. business income"
+    >
+      {SLAB_OPTIONS.map((s) => (
+        <MenuItem key={s} value={s}>
+          {s}%{s === 30 ? ' (default)' : ''}
+        </MenuItem>
+      ))}
+    </TextField>
+  );
+}
+
 /**
  * Capital-flow view: how much outside money was actually put in vs. how
  * much of every buy was just recycling prior sell proceeds.
@@ -560,6 +672,8 @@ function OrderbookView() {
     queryFn: api.zerodhaPositions,
   });
 
+  const [slab, setSlab] = useTaxSlab();
+
   const recompute = (): void => {
     void qc.invalidateQueries({ queryKey: [...Z_KEY, 'orders'] });
     void qc.invalidateQueries({ queryKey: [...Z_KEY, 'positions'] });
@@ -571,6 +685,7 @@ function OrderbookView() {
   const orders = ordersQ.data ?? [];
   const positions = positionsQ.data?.day ?? [];
   const summary = computeOrderbookSummary(orders, positions);
+  const tax = computeOrderbookTax(orders, summary.realisedPnL, slab);
   const recomputing = ordersQ.isFetching || positionsQ.isFetching;
 
   const cols: GridColDef<KiteOrder>[] = [
@@ -670,6 +785,84 @@ function OrderbookView() {
               : 'error.main'
           }
           secondary="Original + realised + unrealised"
+        />
+      </Box>
+
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        spacing={1}
+        sx={{ mt: 1 }}
+      >
+        <Box>
+          <Typography variant="overline" color="text.secondary">
+            Tax & charges (estimated)
+          </Typography>
+          <Typography variant="caption" color="text.secondary" component="div">
+            Rates verified {TAX_RATES_REVIEWED_AT} ·{' '}
+            <a
+              href={TAX_RATES_SOURCE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'inherit' }}
+            >
+              source
+            </a>
+          </Typography>
+        </Box>
+        <TaxSlabSelect slab={slab} onChange={setSlab} />
+      </Stack>
+
+      <Box
+        display="grid"
+        gridTemplateColumns={{ xs: '1fr 1fr', sm: 'repeat(4, 1fr)' }}
+        gap={2}
+      >
+        <Tooltip
+          title={
+            <Box sx={{ fontSize: 12 }}>
+              <div>STT: {fmtINR(tax.charges.stt)}</div>
+              <div>Exchange txn: {fmtINR(tax.charges.exchange)}</div>
+              <div>SEBI fee: {fmtINR(tax.charges.sebi)}</div>
+              <div>Stamp duty: {fmtINR(tax.charges.stamp)}</div>
+              <div>Brokerage: {fmtINR(tax.charges.brokerage)}</div>
+              <div>GST (18%): {fmtINR(tax.charges.gst)}</div>
+            </Box>
+          }
+          placement="top"
+          arrow
+        >
+          <Box>
+            <SummaryTile
+              label="Transaction charges"
+              primary={fmtINR(tax.charges.total)}
+              primaryColor="error.main"
+              secondary="STT + exch + GST + stamp + brokerage"
+            />
+          </Box>
+        </Tooltip>
+        <SummaryTile
+          label="Realised after charges"
+          primary={fmtINR(tax.realisedAfterCharges)}
+          primaryColor={tax.realisedAfterCharges >= 0 ? 'success.main' : 'error.main'}
+          secondary="Gross realised − charges"
+        />
+        <SummaryTile
+          label={`Income tax @ ${slab}% + cess`}
+          primary={fmtINR(tax.incomeTax)}
+          primaryColor={tax.incomeTax > 0 ? 'error.main' : undefined}
+          secondary={
+            tax.realisedAfterCharges > 0
+              ? `Effective ${(tax.effectiveRate * 100).toFixed(1)}%`
+              : 'No tax on a loss day'
+          }
+        />
+        <SummaryTile
+          label="Net realised after tax"
+          primary={fmtINR(tax.realisedAfterAll)}
+          primaryColor={tax.realisedAfterAll >= 0 ? 'success.main' : 'error.main'}
+          secondary="What actually stays with you"
         />
       </Box>
 
@@ -918,6 +1111,7 @@ function TradesView() {
 }
 
 function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
+  const [slab, setSlab] = useTaxSlab();
   const days = aggregateBrokerTrades(trades);
   const totals = days.reduce(
     (acc, d) => ({
@@ -929,6 +1123,31 @@ function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
     }),
     { buyQty: 0, buyValue: 0, sellQty: 0, sellValue: 0, realisedPnL: 0 },
   );
+
+  // YTD = current Indian financial year (Apr 1 → Mar 31). Cross-day FIFO
+  // matching catches positions opened one day and closed another (any
+  // overnight/swing F&O leg, weekly-expiry options held past midnight).
+  // Per-day matching alone would silently miss that P&L.
+  const fyStart = startOfCurrentFY();
+  const ytdTrades = trades.filter((t) => t.tradeDate >= fyStart);
+  const ytdFifoFills: FifoFill[] = ytdTrades.map((t) => ({
+    tradingsymbol: t.tradingsymbol,
+    exchange: t.exchange,
+    transactionType: t.transactionType,
+    quantity: t.quantity,
+    pricePerUnitRupees: t.averagePricePaise / 100,
+    sortKey:
+      t.fillTimestamp ?? t.exchangeTimestamp ?? t.orderTimestamp ?? t.tradeDate,
+  }));
+  const ytdRealised = computeRealisedFifo(ytdFifoFills);
+  const ytdTaxInputs = brokerTradesToTaxInputs(ytdTrades);
+  const ytdTax = computeTaxLiability(
+    ytdTaxInputs.fills,
+    ytdTaxInputs.brokerageOrders,
+    ytdRealised,
+    slab,
+  );
+  const ytdDayCount = new Set(ytdTrades.map((t) => t.tradeDate)).size;
 
   const tradeCols: GridColDef<BrokerTrade>[] = [
     {
@@ -998,6 +1217,84 @@ function TradesViewContent({ trades }: { trades: BrokerTrade[] }) {
           primary={fmtINR(totals.realisedPnL)}
           primaryColor={totals.realisedPnL >= 0 ? 'success.main' : 'error.main'}
           secondary="Matched intraday legs"
+        />
+      </Box>
+
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        spacing={1}
+        sx={{ mt: 1 }}
+      >
+        <Box>
+          <Typography variant="overline" color="text.secondary">
+            Year-to-date tax (FY since {fyStart}, {ytdDayCount} day{ytdDayCount === 1 ? '' : 's'})
+          </Typography>
+          <Typography variant="caption" color="text.secondary" component="div">
+            Cross-day FIFO matching · Rates verified {TAX_RATES_REVIEWED_AT} ·{' '}
+            <a
+              href={TAX_RATES_SOURCE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'inherit' }}
+            >
+              source
+            </a>
+          </Typography>
+        </Box>
+        <TaxSlabSelect slab={slab} onChange={setSlab} />
+      </Stack>
+
+      <Box
+        display="grid"
+        gridTemplateColumns={{ xs: '1fr 1fr', sm: 'repeat(4, 1fr)' }}
+        gap={2}
+      >
+        <SummaryTile
+          label="YTD realised (FIFO)"
+          primary={fmtINR(ytdRealised)}
+          primaryColor={ytdRealised >= 0 ? 'success.main' : 'error.main'}
+          secondary="Matched across days"
+        />
+        <Tooltip
+          title={
+            <Box sx={{ fontSize: 12 }}>
+              <div>STT: {fmtINR(ytdTax.charges.stt)}</div>
+              <div>Exchange txn: {fmtINR(ytdTax.charges.exchange)}</div>
+              <div>SEBI fee: {fmtINR(ytdTax.charges.sebi)}</div>
+              <div>Stamp duty: {fmtINR(ytdTax.charges.stamp)}</div>
+              <div>Brokerage: {fmtINR(ytdTax.charges.brokerage)}</div>
+              <div>GST (18%): {fmtINR(ytdTax.charges.gst)}</div>
+            </Box>
+          }
+          placement="top"
+          arrow
+        >
+          <Box>
+            <SummaryTile
+              label="YTD charges"
+              primary={fmtINR(ytdTax.charges.total)}
+              primaryColor="error.main"
+              secondary="STT + exch + GST + stamp + brokerage"
+            />
+          </Box>
+        </Tooltip>
+        <SummaryTile
+          label={`YTD income tax @ ${slab}% + cess`}
+          primary={fmtINR(ytdTax.incomeTax)}
+          primaryColor={ytdTax.incomeTax > 0 ? 'error.main' : undefined}
+          secondary={
+            ytdTax.realisedAfterCharges > 0
+              ? `Effective ${(ytdTax.effectiveRate * 100).toFixed(1)}% on ₹${ytdTax.realisedAfterCharges.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+              : 'No tax on a net loss'
+          }
+        />
+        <SummaryTile
+          label="YTD net after tax"
+          primary={fmtINR(ytdTax.realisedAfterAll)}
+          primaryColor={ytdTax.realisedAfterAll >= 0 ? 'success.main' : 'error.main'}
+          secondary="Realised − charges − income tax"
         />
       </Box>
 
