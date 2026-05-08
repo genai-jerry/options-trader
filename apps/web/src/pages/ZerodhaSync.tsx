@@ -35,14 +35,12 @@ import {
   TAX_RATES_SOURCE_URL,
   aggregateCharges,
   classifyByMeta,
-  computeRealisedFifo,
   computeTaxLiability,
-  startOfCurrentFY,
-  type FifoFill,
   type FillForCharges,
   type OrderForBrokerage,
   type TaxLiability,
 } from '../domain/indianTax';
+import { brokerTradesToTaxInputs, computeYtdSummary } from '../domain/zerodhaInsights';
 
 const Z_KEY = ['zerodha'] as const;
 
@@ -453,71 +451,9 @@ function ordersToTaxInputs(orders: KiteOrder[]): {
   return { fills, brokerageOrders };
 }
 
-// Convert synced Kite fills (broker_trades) into tax inputs. Brokerage is
-// per-order, not per-fill — group by order_id and bill ₹20 per unique
-// order so partial fills don't inflate it.
-function brokerTradesToTaxInputs(trades: BrokerTrade[]): {
-  fills: FillForCharges[];
-  brokerageOrders: OrderForBrokerage[];
-} {
-  const fills: FillForCharges[] = [];
-  const orderSegments = new Map<string, OrderForBrokerage['segment']>();
-  for (const t of trades) {
-    const segment = classifyByMeta({
-      tradingsymbol: t.tradingsymbol,
-      exchange: t.exchange,
-      product: t.product,
-    });
-    fills.push({
-      segment,
-      side: t.transactionType,
-      turnover: (t.quantity * t.averagePricePaise) / 100,
-    });
-    if (!orderSegments.has(t.orderId)) orderSegments.set(t.orderId, segment);
-  }
-  const brokerageOrders: OrderForBrokerage[] = [...orderSegments.values()].map(
-    (segment) => ({ segment }),
-  );
-  return { fills, brokerageOrders };
-}
-
 function computeOrderbookTax(orders: KiteOrder[], grossRealised: number, slab: number): TaxLiability {
   const { fills, brokerageOrders } = ordersToTaxInputs(orders);
   return computeTaxLiability(fills, brokerageOrders, grossRealised, slab);
-}
-
-interface YtdSummary {
-  /** YYYY-MM-DD start of the current Indian FY. */
-  fyStart: string;
-  /** Distinct trading days included in the YTD window. */
-  dayCount: number;
-  /** Cross-day FIFO realised P&L since fyStart. */
-  realised: number;
-  tax: TaxLiability;
-}
-
-function computeYtdSummary(trades: BrokerTrade[], slab: number): YtdSummary {
-  const fyStart = startOfCurrentFY();
-  const ytdTrades = trades.filter((t) => t.tradeDate >= fyStart);
-  const fills: FifoFill[] = ytdTrades.map((t) => ({
-    tradingsymbol: t.tradingsymbol,
-    exchange: t.exchange,
-    transactionType: t.transactionType,
-    quantity: t.quantity,
-    pricePerUnitRupees: t.averagePricePaise / 100,
-    sortKey:
-      t.fillTimestamp ?? t.exchangeTimestamp ?? t.orderTimestamp ?? t.tradeDate,
-  }));
-  const realised = computeRealisedFifo(fills);
-  const taxInputs = brokerTradesToTaxInputs(ytdTrades);
-  const tax = computeTaxLiability(
-    taxInputs.fills,
-    taxInputs.brokerageOrders,
-    realised,
-    slab,
-  );
-  const dayCount = new Set(ytdTrades.map((t) => t.tradeDate)).size;
-  return { fyStart, dayCount, realised, tax };
 }
 
 function useTaxSlab(): [number, (n: number) => void] {

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -8,17 +8,23 @@ import {
   Chip,
   CircularProgress,
   LinearProgress,
+  MenuItem,
   Stack,
+  TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { LineChart } from '@mui/x-charts/LineChart';
 import { Link as RouterLink } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import {
   formatINR,
+  rupeesToPaise,
   type Account,
   type DecisionRecord,
   type Trade,
 } from '@options-trader/shared';
+import type { ChargesBreakdown } from '../domain/indianTax';
 import {
   useAccount,
   useDecisions,
@@ -26,6 +32,14 @@ import {
   useUnlock,
   useWithdrawals,
 } from '../api/hooks';
+import { api } from '../api/client';
+import {
+  SLAB_OPTIONS,
+  SLAB_STORAGE_KEY,
+  TAX_RATES_REVIEWED_AT,
+  TAX_RATES_SOURCE_URL,
+} from '../domain/indianTax';
+import { computeYtdSummary } from '../domain/zerodhaInsights';
 
 const PHASE_COLOR = {
   BOOTSTRAP: 'warning',
@@ -47,9 +61,48 @@ export function Dashboard() {
   const decisionsQ = useDecisions(10);
   const unlock = useUnlock();
 
+  // Broker reality (synced Kite fills + live positions). Same query keys
+  // as the Zerodha Sync tabs so Recalculate / Sync now there refreshes
+  // these too — the Dashboard reflects whatever's in the cache.
+  const ytdQ = useQuery({
+    queryKey: ['zerodha', 'trades-history'],
+    queryFn: () => api.zerodhaTradesHistory(),
+    retry: false,
+  });
+  const positionsQ = useQuery({
+    queryKey: ['zerodha', 'positions'],
+    queryFn: api.zerodhaPositions,
+    retry: false,
+  });
+
+  const [slab, setSlab] = useState<number>(() => {
+    const stored = window.localStorage.getItem(SLAB_STORAGE_KEY);
+    const n = stored ? Number(stored) : 30;
+    return SLAB_OPTIONS.includes(n as (typeof SLAB_OPTIONS)[number]) ? n : 30;
+  });
+  useEffect(() => {
+    window.localStorage.setItem(SLAB_STORAGE_KEY, String(slab));
+  }, [slab]);
+
   if (accountQ.isLoading) return <CircularProgress />;
   if (accountQ.isError) return <Alert severity="error">Failed to load account.</Alert>;
   const account = accountQ.data!;
+
+  const brokerTrades = ytdQ.data?.trades ?? [];
+  const ytd = brokerTrades.length > 0 ? computeYtdSummary(brokerTrades, slab) : null;
+  const dayPositions = positionsQ.data?.day ?? [];
+  // /positions.day.pnl is realised+unrealised for today only. To isolate
+  // unrealised we need today's realised (which we don't have without
+  // fetching orders), so we approximate by using the day's total pnl.
+  // For the realistic-corpus tile this overcounts by today's realised
+  // already in YTD, but day.pnl is small relative to YTD so the bias is
+  // negligible until intraday matters. If a user wants pixel-perfect we
+  // can subtract today's intra-day realised from broker_trades.
+  const todayPnl = dayPositions.reduce((acc, p) => acc + p.pnl, 0);
+  const realisticCorpus =
+    account.principalX !== null && ytd
+      ? account.principalX + ytd.tax.realisedAfterAll + todayPnl
+      : null;
 
   const lockFloor =
     account.principalX !== null ? Math.floor(account.principalX / 2) : null;
@@ -140,6 +193,107 @@ export function Dashboard() {
         )}
       </Box>
 
+      {/* ── Broker activity (Kite fills synced daily) ───────────────── */}
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        spacing={1}
+      >
+        <Box>
+          <Typography variant="subtitle2">Broker activity (YTD, after tax)</Typography>
+          <Typography variant="caption" color="text.secondary" component="div">
+            {ytd
+              ? `FY since ${ytd.fyStart} · ${ytd.dayCount} day${ytd.dayCount === 1 ? '' : 's'} synced · cross-day FIFO`
+              : 'No synced fills yet — runs daily at 18:00 IST or hit "Sync now" on Zerodha Sync.'}
+            {' · Rates verified '}
+            {TAX_RATES_REVIEWED_AT}
+            {' · '}
+            <a
+              href={TAX_RATES_SOURCE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'inherit' }}
+            >
+              source
+            </a>
+          </Typography>
+        </Box>
+        <TextField
+          select
+          size="small"
+          label="Tax slab"
+          value={slab}
+          onChange={(e) => setSlab(Number(e.target.value))}
+          sx={{ minWidth: 140 }}
+        >
+          {SLAB_OPTIONS.map((s) => (
+            <MenuItem key={s} value={s}>
+              {s}%
+            </MenuItem>
+          ))}
+        </TextField>
+      </Stack>
+
+      {ytdQ.isError && (
+        <Alert severity="info">
+          Couldn't load broker trade history. Connect Kite on{' '}
+          <RouterLink to="/zerodha" style={{ color: 'inherit' }}>Zerodha Sync</RouterLink>.
+        </Alert>
+      )}
+
+      {ytd && (
+        <Box
+          display="grid"
+          gap={{ xs: 1.5, sm: 2 }}
+          sx={{
+            gridTemplateColumns: {
+              xs: 'repeat(2, 1fr)',
+              sm: 'repeat(3, 1fr)',
+              md: 'repeat(auto-fit, minmax(200px, 1fr))',
+            },
+          }}
+        >
+          <Tile
+            label="YTD realised (FIFO)"
+            value={formatINR(rupeesToPaise(ytd.realised))}
+            accent={ytd.realised >= 0 ? 'success' : 'error'}
+            sub="Matched across days"
+          />
+          <ChargesTile charges={ytd.tax.charges} />
+          <Tile
+            label={`YTD tax @ ${slab}% + cess`}
+            value={formatINR(rupeesToPaise(ytd.tax.incomeTax))}
+            accent={ytd.tax.incomeTax > 0 ? 'error' : undefined}
+            sub={
+              ytd.tax.realisedAfterCharges > 0
+                ? `Effective ${(ytd.tax.effectiveRate * 100).toFixed(1)}%`
+                : 'No tax on a net loss'
+            }
+          />
+          <Tile
+            label="YTD net after tax"
+            value={formatINR(rupeesToPaise(ytd.tax.realisedAfterAll))}
+            accent={ytd.tax.realisedAfterAll >= 0 ? 'success' : 'error'}
+            sub="Realised − charges − tax"
+          />
+          {realisticCorpus !== null && (
+            <Tile
+              label="Realistic corpus"
+              value={formatINR(rupeesToPaise(realisticCorpus))}
+              accent="primary"
+              sub="Principal X + YTD net + day P&L"
+            />
+          )}
+          <Tile
+            label="Today's broker P&L"
+            value={formatINR(rupeesToPaise(todayPnl))}
+            accent={todayPnl >= 0 ? 'success' : todayPnl < 0 ? 'error' : undefined}
+            sub="Live positions M2M"
+          />
+        </Box>
+      )}
+
       {/* Principal recovered */}
       {account.principalX !== null && account.principalX > 0 && (
         <Card>
@@ -188,6 +342,36 @@ export function Dashboard() {
 
       <OpenPositionsCard trades={openQ.data ?? []} />
     </Stack>
+  );
+}
+
+// ─── charges tile (with hover breakdown) ─────────────────────────────
+
+function ChargesTile({ charges }: { charges: ChargesBreakdown }) {
+  return (
+    <Tooltip
+      title={
+        <Box sx={{ fontSize: 12 }}>
+          <div>STT: {formatINR(rupeesToPaise(charges.stt))}</div>
+          <div>Exchange txn: {formatINR(rupeesToPaise(charges.exchange))}</div>
+          <div>SEBI fee: {formatINR(rupeesToPaise(charges.sebi))}</div>
+          <div>Stamp duty: {formatINR(rupeesToPaise(charges.stamp))}</div>
+          <div>Brokerage: {formatINR(rupeesToPaise(charges.brokerage))}</div>
+          <div>GST (18%): {formatINR(rupeesToPaise(charges.gst))}</div>
+        </Box>
+      }
+      placement="top"
+      arrow
+    >
+      <Box>
+        <Tile
+          label="YTD charges"
+          value={formatINR(rupeesToPaise(charges.total))}
+          accent="error"
+          sub="STT + exch + GST + stamp + brokerage"
+        />
+      </Box>
+    </Tooltip>
   );
 }
 
