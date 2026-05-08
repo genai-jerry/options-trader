@@ -19,6 +19,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
   formatINR,
+  paiseToRupees,
   rupeesToPaise,
   type Account,
   type DecisionRecord,
@@ -99,9 +100,12 @@ export function Dashboard() {
   // negligible until intraday matters. If a user wants pixel-perfect we
   // can subtract today's intra-day realised from broker_trades.
   const todayPnl = dayPositions.reduce((acc, p) => acc + p.pnl, 0);
+  // Unit-care: principalX is paise (integer), YTD net + Kite pnl are
+  // rupees (float). Convert principalX before adding so we don't end up
+  // with a 100× corpus.
   const realisticCorpus =
     account.principalX !== null && ytd
-      ? account.principalX + ytd.tax.realisedAfterAll + todayPnl
+      ? paiseToRupees(account.principalX) + ytd.tax.realisedAfterAll + todayPnl
       : null;
 
   const lockFloor =
