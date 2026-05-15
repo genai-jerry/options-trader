@@ -272,7 +272,7 @@ zerodhaRouter.post(
     } catch (err) {
       const message =
         err instanceof KiteError
-          ? `${err.errorType ?? 'KiteError'}: ${err.message}`
+          ? describeKiteError(err)
           : err instanceof Error
             ? err.message
             : 'Sync failed.';
@@ -301,15 +301,38 @@ function maskKey(key: string): string {
   return `${key.slice(0, 2)}${'•'.repeat(Math.max(0, key.length - 6))}${key.slice(-4)}`;
 }
 
+// Kite's error messages are terse and sometimes cryptic. Translate the ones
+// users actually hit into actionable guidance.
+function describeKiteError(err: KiteError): string {
+  if (isUserNotEnabledError(err)) {
+    return (
+      'Your Zerodha account is not enabled for this Kite Connect app. ' +
+      'Sign in at https://developers.kite.trade and check that: (1) the app ' +
+      'is active and its subscription has not lapsed, and (2) you are logging ' +
+      'in with the same Zerodha account that owns the app — a Kite Connect ' +
+      'app only works with its developer account unless it has been published.'
+    );
+  }
+  return err.message;
+}
+
+// Kite reports an account that isn't authorised for the app as an
+// InputException; reconnecting won't help, so it must not be treated as a
+// recoverable session-expiry (TokenException).
+function isUserNotEnabledError(err: KiteError): boolean {
+  return err.message.toLowerCase().includes('not enabled for the app');
+}
+
 function handleKiteError(err: unknown, res: Response): void {
   if (err instanceof KiteError) {
-    const status =
-      err.errorType === 'TokenException' || err.status === 403
+    const status = isUserNotEnabledError(err)
+      ? 403
+      : err.errorType === 'TokenException' || err.status === 403
         ? 401
         : err.status >= 400
           ? err.status
           : 502;
-    res.status(status).json({ error: err.message, errorType: err.errorType });
+    res.status(status).json({ error: describeKiteError(err), errorType: err.errorType });
     return;
   }
   res.status(502).json({ error: err instanceof Error ? err.message : 'Kite call failed.' });
