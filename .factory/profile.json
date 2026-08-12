@@ -1,0 +1,58 @@
+{
+  "repo": "options-trader",
+  "estate_role": "Standalone single-repo project — a personal options-trading capital tracker (npm-workspaces monorepo: apps/web, apps/server, packages/shared). No sibling repos in the genai-jerry estate consume or are consumed by it; cross-repo epic handling does not apply here.",
+  "stack": "TypeScript throughout, npm workspaces monorepo (apps/web, apps/server, packages/shared). Frontend: React 19 + Vite + MUI v7 (MUI X Charts/DataGrid), react-router-dom, react-query (server state), Zustand (transient UI), react-hook-form + zod. Backend: Node >=20, Express 4, better-sqlite3 (SQLite, versioned SQL migrations), zod-parsed env, Google OAuth (custom, apps/server/src/auth), Anthropic SDK (@anthropic-ai/sdk) for the AI advisor, node-cron. Tests: vitest. Build/runtime: tsx for the server, tsc --noEmit + vite build for web. Deploy: Dockerfile + docker-compose to a Lightsail VM via GitHub Actions (.github/workflows/deploy-lightsail.yml, push to main), and alternatively Vercel (static web) + Fly.io (apps/server API), per README.",
+  "branches": {
+    "default": "main",
+    "staging": null
+  },
+  "commands": {
+    "test": "npm run test",
+    "build": "npm run build",
+    "lint": null
+  },
+  "conventions": [
+    "Every monetary amount is stored and computed as integer paise; only packages/shared/src/domain/money.ts (formatINR/paiseToRupees) converts for display — never do float rupee math elsewhere.",
+    "Server routes live one-per-domain in apps/server/src/routes/{domain}.ts, are zod-validated (parseBody from ./_helpers.js), and are registered as an Express Router; handlers are wrapped with wrap() from _helpers.ts so thrown/async errors reach Express's error middleware instead of hanging the request.",
+    "Multi-tenancy is enforced at the repo layer: every per-user table carries user_id, and routes must obtain data access via userRepoFor(req) (apps/server/src/auth/middleware.ts), never a raw createRepo(db) for user data — that only exists for system-level (users/sessions) operations.",
+    "req.dataUserId (not req.userId) is the id to scope data by — it resolves to the family owner's id for linked family members so members see the owner's book; requireAuth must run first or userRepoFor throws.",
+    "Schema changes are additive, sequentially-numbered SQL files in apps/server/src/db/migrations/ (currently 001–006), applied by the versioned runner in db/migrate.ts — never edit a shipped migration.",
+    "Pure business rules (phase transitions, decision engine C1–C6, withdrawal rules) live in packages/shared/src/domain/rules.ts and are exercised only through evaluateDecision/applyRulesOnClose/etc.; server routes call into shared rather than re-implementing rule logic.",
+    "Multi-step DB writes are wrapped in repo.tx(() => { ... }) for atomicity (see trades.ts open/close)."
+  ],
+  "review_checklist": [
+    "New/changed routes call requireAuth and scope data through userRepoFor(req)/req.dataUserId, not a raw system repo or an unscoped query",
+    "Any new monetary field or computation is integer paise end-to-end, with conversion only at the view/formatting boundary",
+    "A schema change ships as a new, additive numbered file under apps/server/src/db/migrations/, never a rewrite of an existing one",
+    "Request bodies are validated with a zod schema via parseBody before use; route handlers are registered through wrap()",
+    "AI advisor code paths keep the deterministic rules engine authoritative — the advisor must never be able to bypass or override a BLOCK verdict from evaluateDecision"
+  ],
+  "qa_notes": [
+    "packages/shared uses vitest with tests in packages/shared/test/*.spec.ts, pure unit tests against the domain layer only (no DB, no HTTP) — e.g. rules.spec.ts covers the R1–R5/C1–C6 rule scenarios with in-memory Account/Trade fixtures.",
+    "apps/server has a vitest test script (--passWithNoTests) but currently zero test files — `npm run test:server` passes trivially with no coverage of routes, auth, or the DB repo layer; new server tests should follow vitest conventions and can construct better-sqlite3 in-memory/temp-file DBs directly (no fixtures/mocking framework is set up yet).",
+    "apps/web has no test script/framework configured at all; UI changes are verified via typecheck + build:web + manual run only."
+  ],
+  "gotchas": [
+    "apps/server has no test files (test:server passes via --passWithNoTests) — do not treat that as a signal the server is well-covered; a failing new server test is real, but silence elsewhere is just absence of tests.",
+    "README.md claims '29 tests' for the shared rules suite; the suite as checked out actually has 25 (packages/shared/test/rules.spec.ts) — a pre-existing doc/code drift, not something introduced by your change.",
+    "There is no lint command/config anywhere in the repo (no ESLint config, no `lint` script) — formatting is Prettier-only (`npm run format`); do not invent a lint gate.",
+    "vite build (build:web) emits a >500kB main chunk size warning — pre-existing, not a regression to chase unless a task specifically asks for code-splitting.",
+    "better-sqlite3 needs a C toolchain to build its native module on `npm ci`; if install fails in a stripped-down environment it's an infra gap, not a code issue.",
+    "The AI advisor (apps/server/src/ai) and Zerodha/Kite integration are both optional and silently no-op without their respective env vars (ANTHROPIC_API_KEY / KITE_API_KEY+SECRET) — absence of these in a runner is expected, not a bug to fix."
+  ],
+  "reuse_hotspots": [
+    "packages/shared/src/domain/ — money and rules helpers; extend rather than re-deriving paise math or phase/decision logic elsewhere",
+    "apps/server/src/routes/_helpers.ts — wrap/parseBody/newId/nowISO/paramString are the shared route utilities",
+    "apps/server/src/db/repo.ts — typed CRUD/tx helpers; add new queries here rather than issuing raw SQL from a route",
+    "apps/web/src/api/{client,hooks}.ts — fetch + react-query wrapper conventions for new frontend data hooks"
+  ],
+  "deploy": {
+    "health_checks": [
+      "curl -fsS https://options-trader-marbled-feather-1669.fly.dev/api/health"
+    ],
+    "notes": [
+      "The repo has two independent deploy paths and no staging branch: (1) push to main triggers .github/workflows/deploy-lightsail.yml, which builds/pushes a Docker image to GHCR and SSHes into a Lightsail VM to redeploy; (2) Vercel serves the static web build and proxies /api/* to a separately-deployed Fly.io app (fly.toml) per vercel.json's rewrite — the Fly.io app is the one with a live, verified /api/health endpoint above. Confirm which target is actually in use before treating a health check failure as a release blocker.",
+      "The Fly.io app has auto_stop/auto_start configured (fly.toml) — a cold machine can take several seconds to answer the first health check; a slow first response is not necessarily a failed deploy."
+    ]
+  }
+}
